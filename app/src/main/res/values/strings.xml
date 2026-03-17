@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">Immich Cloud Photos</string>
+    <string name="login_title">Connect to Immich</string>
+    <string name="server_url_hint">Server URL (e.g. https://immich.example.com)</string>
+    <string name="email_hint">Email</string>
+    <string name="password_hint">Password</string>
+    <string name="api_key_hint">API Key</string>
+    <string name="login_button">Sign In</string>
+    <string name="logout_button">Sign Out</string>
+    <string name="use_api_key">Use API Key instead</string>
+    <string name="use_credentials">Use email &amp; password</string>
+    <string name="connected_as">Connected as %s</string>
+    <string name="login_error">Login failed: %s</string>
+    <string name="server_url_required">Server URL is required</string>
+    <string name="logging_in">Signing in…</string>
+
+    <string name="adb_setup_title">Cloud Photo Picker Setup</string>
+    <string name="adb_setup_description">Make your Immich photos available in the system photo picker used by other apps. Requires a one-time ADB setup.</string>
+    <string name="adb_enable_label">Enable:</string>
+    <string name="adb_enable_command">adb shell device_config override mediaprovider allowed_cloud_providers codes.dreaming.cloudmedia</string>
+    <string name="adb_disable_label">Disable:</string>
+    <string name="adb_disable_command">adb shell device_config clear_override mediaprovider allowed_cloud_providers</string>
+    <string name="adb_setup_footer">Connect your device to a computer with ADB installed and run the command above. This persists across reboots and app updates.</string>
+    <string name="copied_to_clipboard">Copied to clipboard</string>
+</resources>
