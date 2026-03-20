@@ -22,8 +22,17 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5.0.2
 
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "name=$TAG" >> "$GITHUB_OUTPUT"
+          # Generate versionCode from major.minor.patch: major*10000 + minor*100 + patch
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$TAG"
+          echo "code=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_OUTPUT"
+
       - name: Build release APK
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease -Papp.versionName=${{ steps.version.outputs.name }} -Papp.versionCode=${{ steps.version.outputs.code }}
 
       - name: Sign APK
         uses: ilharp/sign-android-release@v2.0.0

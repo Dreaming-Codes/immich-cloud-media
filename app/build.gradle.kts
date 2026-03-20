@@ -22,8 +22,8 @@ android {
         applicationId = "codes.dreaming.cloudmedia"
         minSdk = 34
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = (findProperty("app.versionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = (findProperty("app.versionName") as String?) ?: "1.0.0"
     }
 
     buildTypes {
