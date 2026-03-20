@@ -2,6 +2,8 @@
 
 An Android Cloud Media Provider that integrates your self-hosted [Immich](https://immich.app/) server with the system photo picker. Browse and select your Immich photos and videos directly from any app that uses Android's built-in photo picker.
 
+<img width="1080" height="2340" alt="image" src="https://github.com/user-attachments/assets/df0bb0b6-d024-4592-99da-a2624c4cb46b" />
+
 ## Installation
 
 [<img src="https://github.com/ImranR98/Obtainium/raw/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="56">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22codes.dreaming.cloudmedia%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FDreaming-Codes%2Fimmich-cloud-media%22%2C%22author%22%3A%22Dreaming-Codes%22%2C%22name%22%3A%22Immich%20Cloud%20Photos%22%2C%22additionalSettings%22%3A%22%7B%5C%22about%5C%22%3A%5C%22Cloud%20Media%20Provider%20for%20Immich%5C%22%7D%22%7D)
