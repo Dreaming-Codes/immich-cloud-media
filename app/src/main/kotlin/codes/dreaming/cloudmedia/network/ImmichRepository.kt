@@ -56,26 +56,32 @@ object ImmichRepository {
   private var peopleCacheTime: Long = 0
   private const val PEOPLE_CACHE_TTL_MS = 5 * 60 * 1000L
 
-  // Track asset IDs returned by main sync vs album queries.
-  // Album assets not in the main sync need to be appended so the picker
-  // stores them in its main cloud_media table (required for sharing).
+  // Track asset IDs returned by the main sync so album-only assets
+  // (e.g. shared by other users) can be appended on the last page.
   private val mainSyncAssetIds = mutableSetOf<String>()
-  private val pendingAlbumAssets = mutableListOf<ImmichAsset>()
-  @Volatile
-  var hasPendingAlbumAssets = false
-    private set
+
+  private const val CURRENT_COLLECTION_VERSION = "immich-cloud-v6"
 
   fun initialize(context: Context) {
     appContext = context.applicationContext
     syncPrefs = appContext.getSharedPreferences(SYNC_PREFS, Context.MODE_PRIVATE)
     syncGeneration = syncPrefs.getLong("sync_generation", 0)
+
+    // Force-migrate collection ID to trigger a full re-sync when
+    // upgrading from older versions that didn't include album assets.
+    val storedId = syncPrefs.getString("media_collection_id", null)
+    if (storedId != null && storedId != CURRENT_COLLECTION_VERSION) {
+      syncPrefs.edit().putString("media_collection_id", CURRENT_COLLECTION_VERSION).apply()
+      Log.d(TAG, "Migrated media_collection_id from $storedId to $CURRENT_COLLECTION_VERSION")
+    }
+
     ApiClient.initialize(appContext)
   }
 
   val isConfigured: Boolean get() = ApiClient.isLoggedIn
 
   fun getMediaCollectionId(): String =
-    syncPrefs.getString("media_collection_id", "immich-cloud-v4") ?: "immich-cloud-v4"
+    syncPrefs.getString("media_collection_id", CURRENT_COLLECTION_VERSION) ?: CURRENT_COLLECTION_VERSION
 
   fun getLastSyncGeneration(): Long {
     if (syncGeneration == 0L) refreshSyncGeneration()
@@ -95,7 +101,6 @@ object ImmichRepository {
 
   private fun refreshSyncGeneration() {
     try {
-      val result = queryAllAssets(pageSize = 1)
       val url = ApiClient.buildUrl("/assets/statistics") ?: return
       val request = Request.Builder().url(url).get().build()
       val response = ApiClient.getClient().newCall(request).execute()
@@ -159,12 +164,13 @@ object ImmichRepository {
 
   private fun fetchAllAssetIds(): Set<String> {
     val ids = mutableSetOf<String>()
+    val pageSize = 1000
     var page = 1
     while (true) {
       val searchUrl = ApiClient.buildUrl("/search/metadata") ?: break
       val body = JSONObject().apply {
         put("page", page)
-        put("size", 1000)
+        put("size", pageSize)
       }
       val request = Request.Builder()
         .url(searchUrl)
@@ -180,8 +186,7 @@ object ImmichRepository {
       for (i in 0 until items.length()) {
         ids.add(items.getJSONObject(i).getString("id"))
       }
-      val total = assetsObj.optInt("total", 0)
-      if (ids.size >= total) break
+      if (items.length() < pageSize) break
       page++
     }
     return ids
@@ -216,6 +221,7 @@ object ImmichRepository {
     Log.d(TAG, "queryAllAssets: pageSize=$pageSize, pageToken=$pageToken")
     return try {
       val page = pageToken?.toIntOrNull() ?: 1
+      if (page == 1) mainSyncAssetIds.clear()
       val url = ApiClient.buildUrl("/search/metadata") ?: return QueryResult(emptyList(), null)
       val body = JSONObject().apply {
         put("page", page)
@@ -238,7 +244,6 @@ object ImmichRepository {
       val json = JSONObject(responseBody)
       val assetsObj = json.optJSONObject("assets") ?: return QueryResult(emptyList(), null)
       val items = assetsObj.optJSONArray("items") ?: return QueryResult(emptyList(), null)
-      val total = assetsObj.optInt("total", 0)
 
       val assets = mutableListOf<ImmichAsset>()
       for (i in 0 until items.length()) {
@@ -246,8 +251,9 @@ object ImmichRepository {
       }
       assets.forEach { mainSyncAssetIds.add(it.id) }
 
-      val fetched = (page - 1) * pageSize + assets.size
-      var nextToken = if (fetched < total) (page + 1).toString() else null
+      // Use items count vs pageSize to determine if more pages exist.
+      // The API's "total" field is unreliable (equals page count, not global total).
+      var nextToken = if (items.length() >= pageSize) (page + 1).toString() else null
 
       // When the main sync is complete, fetch all album assets and
       // include any that weren't in the /search/metadata results
@@ -259,8 +265,6 @@ object ImmichRepository {
           assets.addAll(albumAssets)
           albumAssets.forEach { mainSyncAssetIds.add(it.id) }
         }
-        pendingAlbumAssets.clear()
-        hasPendingAlbumAssets = false
       }
 
       Log.d(TAG, "queryAllAssets: returning ${assets.size} assets, nextToken=$nextToken")
@@ -296,22 +300,6 @@ object ImmichRepository {
       val assets = mutableListOf<ImmichAsset>()
       for (i in offset until end) {
         assets.add(assetFromApiJson(assetsArr.getJSONObject(i)))
-      }
-
-      // Track album assets that aren't yet in the main sync so they
-      // can be appended when the picker next queries main media.
-      var foundNew = false
-      for (asset in assets) {
-        if (asset.id !in mainSyncAssetIds) {
-          pendingAlbumAssets.removeAll { it.id == asset.id }
-          pendingAlbumAssets.add(asset)
-          foundNew = true
-        }
-      }
-      if (foundNew) {
-        hasPendingAlbumAssets = true
-        incrementSyncGeneration()
-        Log.d(TAG, "queryAlbumAssets: found ${pendingAlbumAssets.size} assets not in main sync, incremented syncGen to $syncGeneration")
       }
 
       val nextToken = if (end < assetsArr.length()) end.toString() else null
@@ -419,13 +407,11 @@ object ImmichRepository {
       val result = JSONObject(responseBody)
       val assetsObj = result.optJSONObject("assets") ?: return QueryResult(emptyList(), null)
       val items = assetsObj.optJSONArray("items") ?: return QueryResult(emptyList(), null)
-      val total = assetsObj.optInt("total", 0)
       val assets = mutableListOf<ImmichAsset>()
       for (i in 0 until items.length()) {
         assets.add(assetFromApiJson(items.getJSONObject(i)))
       }
-      val fetched = (page - 1) * pageSize + assets.size
-      val nextToken = if (fetched < total) (page + 1).toString() else null
+      val nextToken = if (items.length() >= pageSize) (page + 1).toString() else null
       QueryResult(assets, nextToken)
     } catch (e: Exception) {
       Log.e(TAG, "queryPersonAssets error", e)
@@ -461,13 +447,11 @@ object ImmichRepository {
       val result = JSONObject(responseBody)
       val assetsObj = result.optJSONObject("assets") ?: return QueryResult(emptyList(), null)
       val items = assetsObj.optJSONArray("items") ?: return QueryResult(emptyList(), null)
-      val total = assetsObj.optInt("total", 0)
       val assets = mutableListOf<ImmichAsset>()
       for (i in 0 until items.length()) {
         assets.add(assetFromApiJson(items.getJSONObject(i)))
       }
-      val fetched = (page - 1) * pageSize + assets.size
-      val nextToken = if (fetched < total) (page + 1).toString() else null
+      val nextToken = if (items.length() >= pageSize) (page + 1).toString() else null
       QueryResult(assets, nextToken)
     } catch (e: Exception) {
       Log.e(TAG, "searchAssets error", e)
