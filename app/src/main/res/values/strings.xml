@@ -14,7 +14,19 @@
     <string name="server_url_required">Server URL is required</string>
     <string name="logging_in">Signing in…</string>
 
-    <string name="adb_setup_title">Cloud Photo Picker Setup</string>
+    <string name="shizuku_setup_title">Automatic Setup (Shizuku/Sui)</string>
+    <string name="shizuku_setup_description">Use Shizuku or Sui to set up the cloud photo picker automatically without a computer.</string>
+    <string name="shizuku_enable_button">Enable via Shizuku/Sui</string>
+    <string name="shizuku_disable_button">Disable via Shizuku/Sui</string>
+    <string name="shizuku_not_running">Shizuku/Sui is not running. Start Shizuku or enable Sui in your root manager.</string>
+    <string name="shizuku_ready">Shizuku/Sui is ready.</string>
+    <string name="shizuku_permission_denied">Shizuku/Sui permission was denied.</string>
+    <string name="shizuku_enable_success">Cloud provider enabled successfully!</string>
+    <string name="shizuku_disable_success">Cloud provider disabled successfully.</string>
+    <string name="shizuku_error">Error: %s</string>
+    <string name="shizuku_get">Get Shizuku</string>
+
+    <string name="adb_setup_title">Manual Setup (ADB)</string>
     <string name="adb_setup_description">Make your Immich photos available in the system photo picker used by other apps. Requires a one-time ADB setup.</string>
     <string name="adb_enable_label">Enable:</string>
     <string name="adb_enable_command">adb shell device_config override mediaprovider allowed_cloud_providers codes.dreaming.cloudmedia</string>

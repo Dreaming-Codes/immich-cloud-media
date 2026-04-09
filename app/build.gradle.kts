@@ -44,6 +44,7 @@ android {
     buildFeatures {
         buildConfig = true
         viewBinding = true
+        aidl = true
     }
 }
 
@@ -57,4 +58,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }

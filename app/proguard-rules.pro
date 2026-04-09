@@ -3,3 +3,5 @@
 
 -keep class okhttp3.** { *; }
 -keep class okio.** { *; }
+
+-keep class rikka.shizuku.** { *; }
