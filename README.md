@@ -2,7 +2,7 @@
 
 An Android Cloud Media Provider that integrates your self-hosted [Immich](https://immich.app/) server with the system photo picker. Browse and select your Immich photos and videos directly from any app that uses Android's built-in photo picker.
 
-<img width="1080" height="2340" alt="image" src="https://github.com/user-attachments/assets/df0bb0b6-d024-4592-99da-a2624c4cb46b" />
+<img height="720" alt="image" src="https://github.com/user-attachments/assets/df0bb0b6-d024-4592-99da-a2624c4cb46b" />
 
 ## Installation
 
