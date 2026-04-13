@@ -1,5 +1,6 @@
 package codes.dreaming.cloudmedia.ui
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -8,7 +9,9 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import codes.dreaming.cloudmedia.R
 import codes.dreaming.cloudmedia.databinding.ActivityLoginBinding
@@ -24,10 +27,19 @@ class LoginActivity : AppCompatActivity() {
     private var useApiKey = false
     private var pendingAction: (() -> Unit)? = null
 
+    private val mediaPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { updateMediaPermissionUi() }
+
     companion object {
         private const val SHIZUKU_PERMISSION_REQUEST_CODE = 100
         private const val SHIZUKU_PLAY_STORE_URL =
             "https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api"
+
+        private val MEDIA_PERMISSIONS = arrayOf(
+            Manifest.permission.READ_MEDIA_IMAGES,
+            Manifest.permission.READ_MEDIA_VIDEO
+        )
     }
 
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener { updateShizukuUi() }
@@ -82,8 +94,18 @@ class LoginActivity : AppCompatActivity() {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(SHIZUKU_PLAY_STORE_URL)))
         }
 
+        binding.mediaPermissionButton.setOnClickListener {
+            requestMediaPermissions()
+        }
+
         updateUiState()
         updateShizukuUi()
+        updateMediaPermissionUi()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateMediaPermissionUi()
     }
 
     override fun onDestroy() {
@@ -233,6 +255,34 @@ class LoginActivity : AppCompatActivity() {
     private fun showError(message: String) {
         binding.errorText.text = message
         binding.errorText.visibility = View.VISIBLE
+    }
+
+    private fun hasMediaPermissions(): Boolean =
+        MEDIA_PERMISSIONS.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+
+    private fun updateMediaPermissionUi() {
+        val granted = hasMediaPermissions()
+        binding.mediaPermissionButton.isEnabled = !granted
+        binding.mediaPermissionStatus.text = getString(
+            if (granted) R.string.media_permission_granted else R.string.media_permission_not_granted
+        )
+        binding.mediaPermissionStatus.setTextColor(
+            getColor(
+                if (granted) android.R.color.holo_green_dark
+                else com.google.android.material.R.color.design_default_color_error
+            )
+        )
+    }
+
+    private fun requestMediaPermissions() {
+        val needed = MEDIA_PERMISSIONS.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (needed.isNotEmpty()) {
+            mediaPermissionLauncher.launch(needed.toTypedArray())
+        }
     }
 
     private fun copyToClipboard(text: String) {

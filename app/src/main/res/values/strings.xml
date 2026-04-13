@@ -26,6 +26,12 @@
     <string name="shizuku_error">Error: %s</string>
     <string name="shizuku_get">Get Shizuku</string>
 
+    <string name="media_permission_title">Media Access</string>
+    <string name="media_permission_description">Allow access to your local photos and videos so duplicates between your device and Immich can be hidden automatically.</string>
+    <string name="media_permission_grant_button">Grant Permission</string>
+    <string name="media_permission_granted">Granted</string>
+    <string name="media_permission_not_granted">Not granted</string>
+
     <string name="adb_setup_title">Manual Setup (ADB)</string>
     <string name="adb_setup_description">Make your Immich photos available in the system photo picker used by other apps. Requires a one-time ADB setup.</string>
     <string name="adb_enable_label">Enable:</string>

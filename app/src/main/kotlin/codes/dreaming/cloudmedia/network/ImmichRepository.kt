@@ -1,9 +1,12 @@
 package codes.dreaming.cloudmedia.network
 
+import android.content.ContentUris
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Point
+import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.provider.MediaStore
 import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -25,7 +28,8 @@ data class ImmichAsset(
   val durationMillis: Long,
   val isFavorite: Boolean,
   val orientation: Int,
-  val isImage: Boolean
+  val isImage: Boolean,
+  val originalFileName: String? = null
 )
 
 data class ImmichAlbum(
@@ -60,7 +64,12 @@ object ImmichRepository {
   // (e.g. shared by other users) can be appended on the last page.
   private val mainSyncAssetIds = mutableSetOf<String>()
 
-  private const val CURRENT_COLLECTION_VERSION = "immich-cloud-v6"
+  // Local MediaStore lookup for deduplication: (displayName, sizeBytes) -> MediaStore URI
+  private var localMediaLookup: Map<Pair<String, Long>, Uri>? = null
+  private var localMediaLookupTime: Long = 0
+  private const val LOCAL_MEDIA_CACHE_TTL_MS = 2 * 60 * 1000L
+
+  private const val CURRENT_COLLECTION_VERSION = "immich-cloud-v7"
 
   fun initialize(context: Context) {
     appContext = context.applicationContext
@@ -548,6 +557,9 @@ object ImmichRepository {
     val isImage = type == "IMAGE"
     val createdAt = a.optString("fileCreatedAt", a.optString("createdAt", ""))
     val originalMimeType = a.optString("originalMimeType", "")
+    val originalFileName = a.optString("originalFileName", "").let {
+      if (it.isNotBlank() && it != "null") it else null
+    }
     val exifInfo = a.optJSONObject("exifInfo")
     val fileSize = exifInfo?.optLong("fileSizeInByte", 1) ?: 1L
     val orientation = exifInfo?.optString("orientation", "0")?.toIntOrNull() ?: 0
@@ -571,7 +583,8 @@ object ImmichRepository {
       durationMillis = durationMillis,
       isFavorite = a.optBoolean("isFavorite", false),
       orientation = orientation,
-      isImage = isImage
+      isImage = isImage,
+      originalFileName = originalFileName
     )
   }
 
@@ -602,6 +615,68 @@ object ImmichRepository {
       Log.e(TAG, "fetchAllAlbumOnlyAssets error", e)
       emptyList()
     }
+  }
+
+  fun findLocalMediaStoreUri(asset: ImmichAsset): Uri? {
+    val fileName = asset.originalFileName ?: return null
+    val lookup = getLocalMediaLookup() ?: return null
+    return lookup[Pair(fileName, asset.sizeBytes)]
+  }
+
+  private fun getLocalMediaLookup(): Map<Pair<String, Long>, Uri>? {
+    val now = System.currentTimeMillis()
+    localMediaLookup?.let { cached ->
+      if (now - localMediaLookupTime < LOCAL_MEDIA_CACHE_TTL_MS) return cached
+    }
+    return try {
+      buildLocalMediaLookup().also {
+        localMediaLookup = it
+        localMediaLookupTime = now
+        Log.d(TAG, "Built local media lookup: ${it.size} entries")
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to build local media lookup", e)
+      null
+    }
+  }
+
+  private fun buildLocalMediaLookup(): Map<Pair<String, Long>, Uri> {
+    val result = mutableMapOf<Pair<String, Long>, Uri>()
+    val resolver = appContext.contentResolver
+
+    val projection = arrayOf(
+      MediaStore.MediaColumns._ID,
+      MediaStore.MediaColumns.DISPLAY_NAME,
+      MediaStore.MediaColumns.SIZE
+    )
+
+    val collections = arrayOf(
+      MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+      MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+    )
+
+    for (collection in collections) {
+      try {
+        resolver.query(collection, projection, null, null, null)?.use { cursor ->
+          val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+          val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+          val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+
+          while (cursor.moveToNext()) {
+            val id = cursor.getLong(idCol)
+            val name = cursor.getString(nameCol) ?: continue
+            val size = cursor.getLong(sizeCol)
+            if (size <= 0) continue
+            val uri = ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), id)
+            result[Pair(name, size)] = uri
+          }
+        }
+      } catch (e: SecurityException) {
+        Log.w(TAG, "No permission to query MediaStore: ${e.message}")
+        return emptyMap()
+      }
+    }
+    return result
   }
 
   private fun parseDuration(duration: String): Long {

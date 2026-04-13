@@ -287,6 +287,7 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
   private fun buildMediaCursor(result: QueryResult): MatrixCursor {
     val cursor = MatrixCursor(MEDIA_PROJECTION)
     for (asset in result.assets) {
+      val localUri = ImmichRepository.findLocalMediaStoreUri(asset)
       cursor.addRow(
         arrayOf(
           asset.id,
@@ -300,7 +301,7 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
           if (asset.height > 0) asset.height else null,
           if (asset.orientation != 0) asset.orientation else null,
           getStandardMimeTypeExtension(asset.mimeType),
-          null
+          localUri?.toString()
         )
       )
     }
