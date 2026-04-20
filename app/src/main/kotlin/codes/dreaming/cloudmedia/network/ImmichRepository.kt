@@ -64,6 +64,11 @@ object ImmichRepository {
   // (e.g. shared by other users) can be appended on the last page.
   private val mainSyncAssetIds = mutableSetOf<String>()
 
+  // Buffered sync stream results from detectAndApplyChanges()
+  // consumed by queryDeletedAssets() to avoid duplicate HTTP calls
+  private var pendingDeleteIds = mutableListOf<String>()
+  private var pendingAckIds = mutableListOf<String>()
+
   // Local MediaStore lookup for deduplication: (displayName, sizeBytes) -> MediaStore URI
   private var localMediaLookup: Map<Pair<String, Long>, Uri>? = null
   private var localMediaLookupTime: Long = 0
@@ -93,7 +98,6 @@ object ImmichRepository {
     syncPrefs.getString("media_collection_id", CURRENT_COLLECTION_VERSION) ?: CURRENT_COLLECTION_VERSION
 
   fun getLastSyncGeneration(): Long {
-    if (syncGeneration == 0L) refreshSyncGeneration()
     return syncGeneration
   }
 
@@ -108,42 +112,20 @@ object ImmichRepository {
     syncPrefs.edit().putString("media_collection_id", newId).apply()
   }
 
-  private fun refreshSyncGeneration() {
-    try {
-      val url = ApiClient.buildUrl("/assets/statistics") ?: return
-      val request = Request.Builder().url(url).get().build()
-      val response = ApiClient.getClient().newCall(request).execute()
-      if (response.isSuccessful) {
-        val json = JSONObject(response.body?.string() ?: "{}")
-        val total = json.optLong("images", 0) + json.optLong("videos", 0)
-        if (total > 0) {
-          syncGeneration = total
-          syncPrefs.edit().putLong("sync_generation", syncGeneration).apply()
-        }
+  fun detectAndApplyChanges(): Boolean {
+    return try {
+      val (deletedIds, ackIds) = consumeSyncStream(listOf("AssetsV1"))
+      val hasChanges = deletedIds.isNotEmpty() || ackIds.isNotEmpty()
+      if (hasChanges) {
+        pendingDeleteIds = deletedIds.toMutableList()
+        pendingAckIds = ackIds.toMutableList()
+        incrementSyncGeneration()
+        Log.d(TAG, "detectAndApplyChanges: sync stream has ${deletedIds.size} deletes, ${ackIds.size} acks, syncGen=$syncGeneration")
       }
-      response.close()
-    } catch (e: Exception) {
-      Log.e(TAG, "refreshSyncGeneration error", e)
-    }
-  }
-
-  fun detectAndApplyChanges() {
-    try {
-      val url = ApiClient.buildUrl("/assets/statistics") ?: return
-      val request = Request.Builder().url(url).get().build()
-      val response = ApiClient.getClient().newCall(request).execute()
-      if (response.isSuccessful) {
-        val json = JSONObject(response.body?.string() ?: "{}")
-        val total = json.optLong("images", 0) + json.optLong("videos", 0)
-        if (total != syncGeneration && total > 0) {
-          syncGeneration = total
-          syncPrefs.edit().putLong("sync_generation", syncGeneration).apply()
-          Log.d(TAG, "detectAndApplyChanges: updated syncGen to $syncGeneration")
-        }
-      }
-      response.close()
+      hasChanges
     } catch (e: Exception) {
       Log.e(TAG, "detectAndApplyChanges error", e)
+      false
     }
   }
 
@@ -160,14 +142,33 @@ object ImmichRepository {
 
   fun queryDeletedAssets(syncGeneration: Long): List<String> {
     return try {
-      val currentIds = fetchAllAssetIds()
-      val previousIds = loadTrackedAssetIds()
-      val deleted = previousIds - currentIds
-      Log.d(TAG, "queryDeletedAssets: previous=${previousIds.size}, current=${currentIds.size}, deleted=${deleted.size}")
-      deleted.toList()
+      val deletedIds: List<String>
+      val ackIds: List<String>
+      if (pendingDeleteIds.isNotEmpty() || pendingAckIds.isNotEmpty()) {
+        deletedIds = pendingDeleteIds.toList()
+        ackIds = pendingAckIds.toList()
+        pendingDeleteIds.clear()
+        pendingAckIds.clear()
+      } else {
+        val (d, a) = consumeSyncStream(listOf("AssetsV1"))
+        deletedIds = d
+        ackIds = a
+      }
+      if (ackIds.isNotEmpty()) ackSyncEvents(ackIds)
+      Log.d(TAG, "queryDeletedAssets: found ${deletedIds.size} deleted assets via sync stream")
+      deletedIds
     } catch (e: Exception) {
-      Log.e(TAG, "queryDeletedAssets error", e)
-      emptyList()
+      Log.e(TAG, "queryDeletedAssets sync stream error, falling back to snapshot diff", e)
+      try {
+        val currentIds = fetchAllAssetIds()
+        val previousIds = loadTrackedAssetIds()
+        val deleted = previousIds - currentIds
+        Log.d(TAG, "queryDeletedAssets fallback: previous=${previousIds.size}, current=${currentIds.size}, deleted=${deleted.size}")
+        deleted.toList()
+      } catch (e2: Exception) {
+        Log.e(TAG, "queryDeletedAssets fallback error", e2)
+        emptyList()
+      }
     }
   }
 
@@ -219,6 +220,85 @@ object ImmichRepository {
       getTrackingFile().writeText(ids.joinToString("\n"))
     } catch (e: Exception) {
       Log.e(TAG, "saveTrackedAssetIds error", e)
+    }
+  }
+
+  private fun consumeSyncStream(types: List<String>, reset: Boolean = false): Pair<List<String>, List<String>> {
+    val url = ApiClient.buildUrl("/sync/stream") ?: return Pair(emptyList(), emptyList())
+    val bodyJson = JSONObject().apply {
+      put("types", JSONArray(types))
+      if (reset) put("reset", true)
+    }
+    val request = Request.Builder()
+      .url(url)
+      .post(bodyJson.toString().toRequestBody("application/json".toMediaType()))
+      .build()
+
+    val response = ApiClient.getClient().newCall(request).execute()
+    if (!response.isSuccessful) {
+      val code = response.code
+      response.close()
+      throw Exception("Sync stream HTTP $code")
+    }
+
+    val deletedIds = mutableListOf<String>()
+    val ackIds = mutableListOf<String>()
+
+    val responseText = response.body?.string() ?: ""
+    response.close()
+
+    for (line in responseText.lineSequence()) {
+      if (line.isBlank()) continue
+      try {
+        val event = JSONObject(line)
+        val type = event.optString("type")
+        val data = event.optJSONObject("data")
+
+        if (data != null) {
+          if (type.contains("Delete", ignoreCase = true)) {
+            val assetId = data.optString("assetId")
+            if (assetId.isNotBlank()) deletedIds.add(assetId)
+          } else if (type.contains("Asset", ignoreCase = true)) {
+            val deletedAt = data.optString("deletedAt")
+            if (deletedAt.isNotBlank() && deletedAt != "null") {
+              val id = data.optString("id")
+              if (id.isNotBlank()) deletedIds.add(id)
+            }
+          }
+          val dataAck = data.optString("ack")
+          if (dataAck.isNotBlank()) ackIds.add(dataAck)
+        }
+
+        val eventAck = event.optString("ack")
+        if (eventAck.isNotBlank()) ackIds.add(eventAck)
+      } catch (e: Exception) {
+        Log.w(TAG, "Failed to parse sync event: ${line.take(200)}", e)
+      }
+    }
+    Log.d(TAG, "consumeSyncStream: ${deletedIds.size} deletes, ${ackIds.size} acks")
+    return Pair(deletedIds, ackIds)
+  }
+
+  private fun ackSyncEvents(ackIds: List<String>) {
+    if (ackIds.isEmpty()) return
+    try {
+      val url = ApiClient.buildUrl("/sync/ack") ?: return
+      ackIds.chunked(1000).forEach { batch ->
+        val body = JSONObject().apply {
+          put("acks", JSONArray(batch))
+        }
+        val request = Request.Builder()
+          .url(url)
+          .post(body.toString().toRequestBody("application/json".toMediaType()))
+          .build()
+        val response = ApiClient.getClient().newCall(request).execute()
+        if (!response.isSuccessful) {
+          Log.e(TAG, "ackSyncEvents failed: ${response.code}")
+        }
+        response.close()
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "ackSyncEvents error", e)
     }
   }
 

@@ -35,6 +35,12 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
   override fun onGetMediaCollectionInfo(extras: Bundle): Bundle {
     checkPermission()
     Log.d(TAG, "onGetMediaCollectionInfo called")
+
+    val changed = ImmichRepository.detectAndApplyChanges()
+    if (changed) {
+      context?.contentResolver?.notifyChange(toNotifyUri(), null)
+    }
+
     val bundle = Bundle()
     bundle.putString(
       CloudMediaProviderContract.MediaCollectionInfo.MEDIA_COLLECTION_ID,
@@ -85,10 +91,6 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
     }
 
     val cursor = buildMediaCursor(result)
-
-    if (result.nextPageToken == null && albumId == null) {
-      ImmichRepository.snapshotCurrentAssetIds()
-    }
 
     val cursorExtras = Bundle()
     cursorExtras.putString(
@@ -315,6 +317,11 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
       ImmichRepository.getMediaCollectionId()
     )
     return extras
+  }
+
+  private fun toNotifyUri(): android.net.Uri {
+    val authority = context!!.packageName + ".cloudmedia"
+    return android.net.Uri.parse("content://$authority")
   }
 
   private fun checkPermission() {
