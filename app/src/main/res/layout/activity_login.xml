@@ -142,6 +142,19 @@
                 android:layout_marginBottom="8dp" />
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/certificate_button"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/certificate_button"
+                android:layout_marginTop="8dp"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+
+                app:icon="@android:drawable/ic_secure"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp"
+                app:iconSize="12dp" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/login_button"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

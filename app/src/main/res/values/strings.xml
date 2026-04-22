@@ -13,6 +13,9 @@
     <string name="login_error">Login failed: %s</string>
     <string name="server_url_required">Server URL is required</string>
     <string name="logging_in">Signing in…</string>
+    <string name="certificate_button">Select Client Certificate</string>
+    <string name="certificate_selected">Using: %s</string>
+    <string name="invalid_certificate">The Client Certificate is invalid</string>
 
     <string name="shizuku_setup_title">Automatic Setup (Shizuku/Sui)</string>
     <string name="shizuku_setup_description">Use Shizuku or Sui to set up the cloud photo picker automatically without a computer.</string>

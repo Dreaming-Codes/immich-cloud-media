@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.security.KeyChain
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -68,6 +69,8 @@ class LoginActivity : AppCompatActivity() {
             useApiKey = !useApiKey
             updateAuthModeUi()
         }
+
+        binding.certificateButton.setOnClickListener { selectCertificate() }
 
         binding.loginButton.setOnClickListener { performLogin() }
         binding.logoutButton.setOnClickListener { performLogout() }
@@ -208,13 +211,42 @@ class LoginActivity : AppCompatActivity() {
             binding.loginForm.visibility = View.VISIBLE
             binding.connectedContainer.visibility = View.GONE
         }
+        updateCertificateButton(ApiClient.certificateAlias)
         binding.errorText.visibility = View.GONE
+    }
+
+    private fun updateCertificateButton(alias: String?) {
+        binding.certificateButton.text =
+            if (alias == null) {
+                getString(R.string.certificate_button)
+            } else {
+                getString(R.string.certificate_selected, alias)
+            }
+    }
+
+    private fun selectCertificate() {
+        KeyChain.choosePrivateKeyAlias(
+            this,
+            { alias ->
+                ApiClient.certificateAlias = alias
+                runOnUiThread { updateCertificateButton(alias) }
+            },
+            null,
+            null,
+            ApiClient.serverUrl,
+            -1,
+            null,
+        )
     }
 
     private fun performLogin() {
         val serverUrl = binding.serverUrlInput.text?.toString()?.trim() ?: ""
         if (serverUrl.isBlank()) {
             showError(getString(R.string.server_url_required))
+            return
+        }
+        if (ApiClient.certificateAlias != null && ApiClient.getKeyManager() == null) {
+            showError(getString(R.string.invalid_certificate))
             return
         }
 
