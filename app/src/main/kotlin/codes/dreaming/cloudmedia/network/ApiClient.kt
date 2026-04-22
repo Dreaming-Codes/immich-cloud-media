@@ -63,7 +63,7 @@ object ApiClient {
   @Synchronized
   private fun buildClient(context: Context) {
     val alias = certificateAlias
-    keyManager = alias?.let { runCatching { buildKeyManager(it, context.applicationContext) }.getOrNull() }
+    keyManager = alias?.let { runCatching { buildKeyManager(it, context) }.getOrNull() }
 
     val cacheDir = File(context.cacheDir, "okhttp_api")
 
@@ -121,6 +121,7 @@ object ApiClient {
       .remove(KEY_ACCESS_TOKEN)
       .remove(KEY_API_KEY)
       .remove(KEY_ACCOUNT_NAME)
+      .remove(KEY_CERTIFICATE_ALIAS)
       .apply()
   }
 
