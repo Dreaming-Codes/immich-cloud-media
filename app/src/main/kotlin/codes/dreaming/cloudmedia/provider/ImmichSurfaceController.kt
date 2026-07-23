@@ -5,15 +5,14 @@ import android.content.Context
 import android.graphics.Point
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Bundle
-import android.os.ParcelFileDescriptor
 import android.provider.CloudMediaProvider.CloudMediaSurfaceController
 import android.provider.CloudMediaProvider.CloudMediaSurfaceStateChangedCallback
 import android.provider.CloudMediaProviderContract
 import android.util.Log
 import android.view.Surface
 import codes.dreaming.cloudmedia.network.ImmichRepository
-import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "ImmichSurface"
@@ -114,16 +113,10 @@ class ImmichSurfaceController(
 
     Thread {
       try {
-        val tempFile = File(context.cacheDir, "video_$mediaId.tmp")
-        val fd = ImmichRepository.openMedia(mediaId)
-        if (fd == null) {
-          reportError(surfaceId)
-          return@Thread
-        }
-        ParcelFileDescriptor.AutoCloseInputStream(fd).use { input ->
-          tempFile.outputStream().use { output -> input.copyTo(output, 65536) }
-        }
-        if (!tempFile.exists() || tempFile.length() == 0L) {
+        // Stream Immich's playback endpoint (serves the transcoded video with
+        // range support) instead of downloading the full original first.
+        val playbackUrl = ImmichRepository.videoPlaybackUrl(mediaId)
+        if (playbackUrl == null) {
           reportError(surfaceId)
           return@Thread
         }
@@ -136,7 +129,7 @@ class ImmichSurfaceController(
             .build()
         )
         player.setSurface(surface)
-        player.setDataSource(tempFile.absolutePath)
+        player.setDataSource(context, Uri.parse(playbackUrl), ImmichRepository.playbackAuthHeaders())
         player.isLooping = loopingEnabled
         val volume = if (audioMuted) 0f else 1f
         player.setVolume(volume, volume)
