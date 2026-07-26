@@ -163,6 +163,81 @@ object ApiClient {
     }
   }
 
+
+  fun getSsoAuthUrl(serverUrl: String): Result<String> {
+    return try {
+      this.serverUrl = serverUrl
+      val url = buildUrl("/oauth/authorize") ?: return Result.failure(Exception("Invalid server URL"))
+
+      val body = JSONObject().apply {
+        put("redirectUri", "app.immich:///oauth-callback")
+      }
+
+      val request = Request.Builder()
+        .url(url)
+        .post(body.toString().toRequestBody("application/json".toMediaType()))
+        .build()
+
+      client.newCall(request).execute().use { response ->
+        val responseBody = response.body?.string() ?: "{}"
+        if (!response.isSuccessful) {
+          val msg = try { JSONObject(responseBody).optString("message", "Unknown error") } catch (_: Exception) { "HTTP ${response.code}" }
+          return Result.failure(Exception(msg))
+        }
+
+        val json = JSONObject(responseBody)
+        val authUrl = json.optString("url", "")
+
+        if (authUrl.isBlank()) {
+          Result.failure(Exception("No URL returned from server"))
+        } else {
+          Result.success(authUrl)
+        }
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "getSsoAuthUrl error", e)
+      Result.failure(e)
+    }
+  }
+
+  fun finishSsoLogin(serverUrl: String, callbackUrl: String): Result<String> {
+    return try {
+      this.serverUrl = serverUrl
+      val url = buildUrl("/oauth/callback") ?: return Result.failure(Exception("Invalid server URL"))
+
+      val body = JSONObject().apply {
+        put("url", callbackUrl.replace("app.immich:/oauth-callback", "app.immich:///oauth-callback"))
+      }
+
+      val request = Request.Builder()
+        .url(url)
+        .post(body.toString().toRequestBody("application/json".toMediaType()))
+        .build()
+
+      client.newCall(request).execute().use { response ->
+        val responseBody = response.body?.string() ?: "{}"
+        if (!response.isSuccessful) {
+          val msg = try { JSONObject(responseBody).optString("message", "Unknown error") } catch (_: Exception) { "HTTP ${response.code}" }
+          return Result.failure(Exception(msg))
+        }
+
+        val json = JSONObject(responseBody)
+        val token = json.optString("accessToken", "")
+
+        if (token.isBlank()) {
+          return Result.failure(Exception("No access token in response"))
+        }
+
+        saveAccessToken(token)
+        fetchAndSaveAccountName()
+        Result.success(token)
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "finishSsoLogin error", e)
+      Result.failure(e)
+    }
+  }
+
   private fun fetchAndSaveAccountName() {
     try {
       val url = buildUrl("/users/me") ?: return
