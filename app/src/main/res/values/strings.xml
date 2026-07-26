@@ -6,8 +6,10 @@
     <string name="password_hint">Password</string>
     <string name="api_key_hint">API Key</string>
     <string name="login_button">Sign In</string>
+    <string name="login_button_sso">Sign In with SSO</string>
     <string name="logout_button">Sign Out</string>
     <string name="use_api_key">Use API Key instead</string>
+    <string name="use_sso">Use SSO instead</string>
     <string name="use_credentials">Use email &amp; password</string>
     <string name="connected_as">Connected as %s</string>
     <string name="login_error">Login failed: %s</string>
@@ -35,7 +37,7 @@
     <string name="adb_setup_title">Manual Setup (ADB)</string>
     <string name="adb_setup_description">Make your Immich photos available in the system photo picker used by other apps. Requires a one-time ADB setup.</string>
     <string name="adb_enable_label">Enable:</string>
-    <string name="adb_enable_command">adb shell device_config override mediaprovider allowed_cloud_providers codes.dreaming.cloudmedia</string>
+    <string name="adb_enable_command">adb shell device_config override mediaprovider allowed_cloud_providers %1$s</string>
     <string name="adb_disable_label">Disable:</string>
     <string name="adb_disable_command">adb shell device_config clear_override mediaprovider allowed_cloud_providers</string>
     <string name="adb_setup_footer">Connect your device to a computer with ADB installed and run the command above. This persists across reboots and app updates.</string>

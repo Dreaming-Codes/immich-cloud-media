@@ -3,16 +3,22 @@ package codes.dreaming.cloudmedia.ui
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
+import codes.dreaming.cloudmedia.BuildConfig
 import codes.dreaming.cloudmedia.R
 import codes.dreaming.cloudmedia.databinding.ActivityLoginBinding
 import codes.dreaming.cloudmedia.network.ApiClient
@@ -24,7 +30,8 @@ import rikka.shizuku.Shizuku
 
 class LoginActivity : AppCompatActivity() {
     private lateinit var binding: ActivityLoginBinding
-    private var useApiKey = false
+    private var authFlow = 1; //0 = api, 1 = regular, 2 = sso
+    private var pendingServerUrl: String = ""
     private var pendingAction: (() -> Unit)? = null
 
     private val mediaPermissionLauncher = registerForActivityResult(
@@ -32,6 +39,8 @@ class LoginActivity : AppCompatActivity() {
     ) { updateMediaPermissionUi() }
 
     companion object {
+        private const val PREF_NAME = "immich_login_prefs"
+        private const val KEY_PENDING_URL = "pending_server_url"
         private const val SHIZUKU_PERMISSION_REQUEST_CODE = 100
         private const val SHIZUKU_PLAY_STORE_URL =
             "https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api"
@@ -65,7 +74,7 @@ class LoginActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.toggleAuthMode.setOnClickListener {
-            useApiKey = !useApiKey
+            authFlow = (authFlow + 1) % 3
             updateAuthModeUi()
         }
 
@@ -73,7 +82,7 @@ class LoginActivity : AppCompatActivity() {
         binding.logoutButton.setOnClickListener { performLogout() }
 
         binding.copyEnableCommand.setOnClickListener {
-            copyToClipboard(getString(R.string.adb_enable_command))
+            copyToClipboard(getString(R.string.adb_enable_command, BuildConfig.APPLICATION_ID))
         }
         binding.copyDisableCommand.setOnClickListener {
             copyToClipboard(getString(R.string.adb_disable_command))
@@ -105,6 +114,7 @@ class LoginActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        handleIntent(intent)
         updateMediaPermissionUi()
     }
 
@@ -188,14 +198,28 @@ class LoginActivity : AppCompatActivity() {
     }
 
     private fun updateAuthModeUi() {
-        if (useApiKey) {
-            binding.credentialsContainer.visibility = View.GONE
-            binding.apiKeyContainer.visibility = View.VISIBLE
-            binding.toggleAuthMode.text = getString(R.string.use_credentials)
-        } else {
-            binding.credentialsContainer.visibility = View.VISIBLE
-            binding.apiKeyContainer.visibility = View.GONE
-            binding.toggleAuthMode.text = getString(R.string.use_api_key)
+        when (authFlow) {
+            0 -> {
+                binding.credentialsContainer.visibility = View.GONE
+                binding.apiKeyContainer.visibility = View.VISIBLE
+                binding.toggleAuthMode.text = getString(R.string.use_credentials)
+                binding.loginButton.text = getString(R.string.login_button)
+            }
+
+            1 -> {
+                binding.credentialsContainer.visibility = View.VISIBLE
+                binding.apiKeyContainer.visibility = View.GONE
+                binding.toggleAuthMode.text = getString(R.string.use_sso)
+                binding.loginButton.text = getString(R.string.login_button)
+            }
+
+            2 -> {
+                binding.credentialsContainer.visibility = View.GONE
+                binding.apiKeyContainer.visibility = View.GONE
+                binding.toggleAuthMode.text = getString(R.string.use_api_key)
+                binding.loginButton.text = getString(R.string.login_button_sso)
+
+            }
         }
     }
 
@@ -221,23 +245,32 @@ class LoginActivity : AppCompatActivity() {
         setLoading(true)
 
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                if (useApiKey) {
-                    val apiKey = binding.apiKeyInput.text?.toString()?.trim() ?: ""
-                    ApiClient.loginWithApiKey(serverUrl, apiKey)
-                } else {
-                    val email = binding.emailInput.text?.toString()?.trim() ?: ""
-                    val password = binding.passwordInput.text?.toString() ?: ""
-                    ApiClient.loginWithCredentials(serverUrl, email, password)
+            if (authFlow != 2)
+            {
+                val result = withContext(Dispatchers.IO) {
+                    when (authFlow){
+                        0 -> {
+                            val apiKey = binding.apiKeyInput.text?.toString()?.trim() ?: ""
+                            ApiClient.loginWithApiKey(serverUrl, apiKey)
+                        }
+                        else -> {
+                            val email = binding.emailInput.text?.toString()?.trim() ?: ""
+                            val password = binding.passwordInput.text?.toString() ?: ""
+                            ApiClient.loginWithCredentials(serverUrl, email, password)
+                        }
+                    }
                 }
+
+                setLoading(false)
+
+                result.fold(
+                    onSuccess = { updateUiState() },
+                    onFailure = { e -> showError(getString(R.string.login_error, e.message)) }
+                )
             }
-
-            setLoading(false)
-
-            result.fold(
-                onSuccess = { updateUiState() },
-                onFailure = { e -> showError(getString(R.string.login_error, e.message)) }
-            )
+            else {
+                startSsoFlow(serverUrl)
+            }
         }
     }
 
@@ -289,5 +322,51 @@ class LoginActivity : AppCompatActivity() {
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("ADB command", text))
         Toast.makeText(this, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun startSsoFlow(serverUrl: String) {
+        val prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        prefs.edit { putString(KEY_PENDING_URL, serverUrl) }
+        pendingServerUrl = serverUrl
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = ApiClient.getSsoAuthUrl(serverUrl)
+            withContext(Dispatchers.Main) {
+                result.onSuccess { authUrl ->
+                    val customTabsIntent = CustomTabsIntent.Builder().build()
+                    customTabsIntent.launchUrl(this@LoginActivity, authUrl.toUri())
+                }.onFailure { e ->
+                    Toast.makeText(this@LoginActivity, "Failed to get SSO URL: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val action = intent?.action
+        val data: Uri? = intent?.data
+
+        if (Intent.ACTION_VIEW == action && data != null && data.scheme == "app.immich") {
+            val callbackUrl = data.toString()
+
+            val prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            pendingServerUrl = prefs.getString(KEY_PENDING_URL, "") ?: ""
+
+            if (pendingServerUrl.isBlank()) {
+                Log.e("LoginActivity", "Server URL is missing upon return from browser.")
+                return
+            }
+
+            lifecycleScope.launch(Dispatchers.IO) {
+                val result = ApiClient.finishSsoLogin(pendingServerUrl, callbackUrl)
+
+                setLoading(false)
+
+                withContext(Dispatchers.Main) {
+                    result.onSuccess { token -> updateUiState() }
+                        .onFailure { e -> showError(getString(R.string.login_error, e.message)) }
+                }
+            }
+        }
     }
 }
