@@ -6,8 +6,10 @@
     <string name="password_hint">Password</string>
     <string name="api_key_hint">API Key</string>
     <string name="login_button">Sign In</string>
+    <string name="login_button_sso">Sign In with SSO</string>
     <string name="logout_button">Sign Out</string>
     <string name="use_api_key">Use API Key instead</string>
+    <string name="use_sso">Use SSO instead</string>
     <string name="use_credentials">Use email &amp; password</string>
     <string name="connected_as">Connected as %s</string>
     <string name="login_error">Login failed: %s</string>
