@@ -5,6 +5,7 @@ import android.content.res.AssetFileDescriptor
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.graphics.Point
+import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
@@ -92,6 +93,26 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
 
     val cursor = buildMediaCursor(result)
 
+    if (result.nextPageToken == null && albumId == null) {
+      ImmichRepository.snapshotCurrentAssetIds()
+    }
+
+    if (albumId != null && ImmichRepository.hasPendingAlbumAssets) {
+      val ctx = context
+
+      if (ctx != null) {
+        val providerAuthority = "${ctx.packageName}.cloudmedia"
+        val mediaUri = Uri.parse("content://$providerAuthority/media")
+
+        ctx.contentResolver.notifyChange(mediaUri, null)
+
+        Log.d(
+          TAG,
+          "onQueryMedia: requested main sync for missing album assets"
+        )
+      }
+    }
+
     val cursorExtras = Bundle()
     cursorExtras.putString(
       CloudMediaProviderContract.EXTRA_MEDIA_COLLECTION_ID,
@@ -138,7 +159,15 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
     val cursor = MatrixCursor(ALBUM_PROJECTION)
     for (album in albums) {
       if (album.coverAssetId == null) continue
-      cursor.addRow(arrayOf(album.id, album.displayName, album.mediaCount, album.coverAssetId, album.dateTakenMillis))
+      cursor.addRow(
+        arrayOf(
+          album.id,
+          album.dateTakenMillis,
+          album.displayName,
+          album.coverAssetId,
+          album.mediaCount
+        )
+      )
     }
 
     val cursorExtras = Bundle()
@@ -288,29 +317,33 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
 
   private fun buildMediaCursor(result: QueryResult): MatrixCursor {
     val cursor = MatrixCursor(MEDIA_PROJECTION)
+
     for (asset in result.assets) {
       val localUri = ImmichRepository.findLocalMediaStoreUri(asset)
+
       cursor.addRow(
         arrayOf(
           asset.id,
-          asset.mimeType,
           asset.dateTakenMillis,
           ImmichRepository.getLastSyncGeneration(),
+          asset.mimeType,
+          getStandardMimeTypeExtension(asset.mimeType),
           asset.sizeBytes,
+          localUri?.toString(),
           if (asset.durationMillis > 0) asset.durationMillis else null,
           if (asset.isFavorite) 1 else 0,
           if (asset.width > 0) asset.width else null,
           if (asset.height > 0) asset.height else null,
-          if (asset.orientation != 0) asset.orientation else null,
-          getStandardMimeTypeExtension(asset.mimeType),
-          localUri?.toString()
+          if (asset.orientation != 0) asset.orientation else null
         )
       )
     }
+
     return cursor
   }
 
   private fun buildCollectionIdExtras(): Bundle {
+
     val extras = Bundle()
     extras.putString(
       CloudMediaProviderContract.EXTRA_MEDIA_COLLECTION_ID,
@@ -347,25 +380,25 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
   companion object {
     private val MEDIA_PROJECTION = arrayOf(
       CloudMediaProviderContract.MediaColumns.ID,
-      CloudMediaProviderContract.MediaColumns.MIME_TYPE,
       CloudMediaProviderContract.MediaColumns.DATE_TAKEN_MILLIS,
       CloudMediaProviderContract.MediaColumns.SYNC_GENERATION,
+      CloudMediaProviderContract.MediaColumns.MIME_TYPE,
+      CloudMediaProviderContract.MediaColumns.STANDARD_MIME_TYPE_EXTENSION,
       CloudMediaProviderContract.MediaColumns.SIZE_BYTES,
+      CloudMediaProviderContract.MediaColumns.MEDIA_STORE_URI,
       CloudMediaProviderContract.MediaColumns.DURATION_MILLIS,
       CloudMediaProviderContract.MediaColumns.IS_FAVORITE,
       CloudMediaProviderContract.MediaColumns.WIDTH,
       CloudMediaProviderContract.MediaColumns.HEIGHT,
-      CloudMediaProviderContract.MediaColumns.ORIENTATION,
-      CloudMediaProviderContract.MediaColumns.STANDARD_MIME_TYPE_EXTENSION,
-      CloudMediaProviderContract.MediaColumns.MEDIA_STORE_URI
+      CloudMediaProviderContract.MediaColumns.ORIENTATION
     )
 
     private val ALBUM_PROJECTION = arrayOf(
       CloudMediaProviderContract.AlbumColumns.ID,
+      CloudMediaProviderContract.AlbumColumns.DATE_TAKEN_MILLIS,
       CloudMediaProviderContract.AlbumColumns.DISPLAY_NAME,
-      CloudMediaProviderContract.AlbumColumns.MEDIA_COUNT,
       CloudMediaProviderContract.AlbumColumns.MEDIA_COVER_ID,
-      CloudMediaProviderContract.AlbumColumns.DATE_TAKEN_MILLIS
+      CloudMediaProviderContract.AlbumColumns.MEDIA_COUNT
     )
 
     @RequiresApi(36)
