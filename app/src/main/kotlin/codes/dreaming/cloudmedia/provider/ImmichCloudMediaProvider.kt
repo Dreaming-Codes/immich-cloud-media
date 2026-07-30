@@ -5,7 +5,6 @@ import android.content.res.AssetFileDescriptor
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.graphics.Point
-import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
@@ -92,26 +91,6 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
     }
 
     val cursor = buildMediaCursor(result)
-
-    if (result.nextPageToken == null && albumId == null) {
-      ImmichRepository.snapshotCurrentAssetIds()
-    }
-
-    if (albumId != null && ImmichRepository.hasPendingAlbumAssets) {
-      val ctx = context
-
-      if (ctx != null) {
-        val providerAuthority = "${ctx.packageName}.cloudmedia"
-        val mediaUri = Uri.parse("content://$providerAuthority/media")
-
-        ctx.contentResolver.notifyChange(mediaUri, null)
-
-        Log.d(
-          TAG,
-          "onQueryMedia: requested main sync for missing album assets"
-        )
-      }
-    }
 
     val cursorExtras = Bundle()
     cursorExtras.putString(
@@ -343,7 +322,6 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
   }
 
   private fun buildCollectionIdExtras(): Bundle {
-
     val extras = Bundle()
     extras.putString(
       CloudMediaProviderContract.EXTRA_MEDIA_COLLECTION_ID,
