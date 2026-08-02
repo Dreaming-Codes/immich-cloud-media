@@ -242,25 +242,46 @@ object ImmichRepository {
 
   // Immich v3+ rejects AssetsV1 as deprecated; pre-v3 servers don't know AssetsV2.
   // A 400 on the cached preference invalidates it so a server upgrade mid-process recovers.
+  private fun apiKeySyncFallback(e: Exception): SyncStreamResult? {
+    if (e.message?.contains("HTTP 403") != true) return null
+
+    Log.w(TAG, "Sync stream unavailable with API keys; skipping change detection")
+    return SyncStreamResult(
+      deletedIds = emptyList(),
+      ackIds = emptyList(),
+      mutationCount = 0
+    )
+  }
+
   private fun consumeAssetSyncStream(): SyncStreamResult {
     if (preferAssetsV1) {
       try {
         return consumeSyncStream(listOf("AssetsV1"))
       } catch (e: Exception) {
+        apiKeySyncFallback(e)?.let { return it }
+
         if (e.message?.contains("HTTP 400") != true) throw e
         preferAssetsV1 = false
       }
     }
+
     try {
       return consumeSyncStream(listOf("AssetsV2"))
     } catch (e: Exception) {
+      apiKeySyncFallback(e)?.let { return it }
+
       if (e.message?.contains("HTTP 400") != true) throw e
     }
-    val result = consumeSyncStream(listOf("AssetsV1"))
-    preferAssetsV1 = true
-    return result
-  }
 
+    try {
+      val result = consumeSyncStream(listOf("AssetsV1"))
+      preferAssetsV1 = true
+      return result
+    } catch (e: Exception) {
+      apiKeySyncFallback(e)?.let { return it }
+      throw e
+    }
+  }
   private fun consumeSyncStream(types: List<String>, reset: Boolean = false): SyncStreamResult {
     val url = ApiClient.buildUrl("/sync/stream") ?: return SyncStreamResult(emptyList(), emptyList(), 0)
     val bodyJson = JSONObject().apply {
