@@ -17,7 +17,10 @@ import codes.dreaming.cloudmedia.network.QueryResult
 import java.io.FileNotFoundException
 
 private const val TAG = "ImmichCloudMedia"
-private const val CATEGORY_PEOPLE = "immich_people"
+// Namespaced per applicationId: the picker's media_sets table is UNIQUE(category_id,
+// media_set_id, mime_type_filter) WITHOUT authority, so a category id shared with
+// another installed Immich provider makes our rows uninsertable and invisible.
+private val CATEGORY_PEOPLE = codes.dreaming.cloudmedia.BuildConfig.APPLICATION_ID + ".people"
 private const val CATEGORY_TYPE_PEOPLE_AND_PETS =
   "com.android.providers.media.MEDIA_CATEGORY_TYPE_PEOPLE_AND_PETS"
 private const val SUGGESTION_TYPE_FACE =
@@ -160,9 +163,16 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
     extras: Bundle,
     cancellationSignal: CancellationSignal?
   ): Cursor {
+    Log.d(TAG, "onQueryMediaCategories: parentCategoryId=$parentCategoryId extras=$extras")
     val cursor = MatrixCursor(MEDIA_CATEGORY_PROJECTION)
     if (parentCategoryId == null) {
-      cursor.addRow(arrayOf(CATEGORY_PEOPLE, "People", CATEGORY_TYPE_PEOPLE_AND_PETS, null, null, null, null))
+      val covers = ImmichRepository.queryPeople().take(4).map { it.coverAssetId }
+      cursor.addRow(
+        arrayOf(
+          CATEGORY_PEOPLE, "People", CATEGORY_TYPE_PEOPLE_AND_PETS,
+          covers.getOrNull(0), covers.getOrNull(1), covers.getOrNull(2), covers.getOrNull(3)
+        )
+      )
     }
     cursor.extras = buildCollectionIdExtras()
     return cursor
@@ -181,6 +191,7 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
         cursor.addRow(arrayOf(person.id, person.name, null, person.coverAssetId))
       }
     }
+    Log.d(TAG, "onQueryMediaSets: categoryId=$mediaCategoryId -> ${cursor.count} sets, extras=$extras")
     cursor.extras = buildCollectionIdExtras()
     return cursor
   }
