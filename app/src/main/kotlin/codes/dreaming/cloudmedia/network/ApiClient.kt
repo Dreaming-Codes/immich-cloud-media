@@ -204,11 +204,11 @@ object ApiClient {
   fun finishOAuthLogin(callbackUrl: String): Result<String> {
     val state = prefs.getString(KEY_OAUTH_STATE, null)
     val codeVerifier = prefs.getString(KEY_OAUTH_VERIFIER, null)
-    prefs.edit().remove(KEY_OAUTH_STATE).remove(KEY_OAUTH_VERIFIER).apply()
     if (state == null || codeVerifier == null) return Result.failure(Exception("No SSO login in progress"))
     if (queryParameter(callbackUrl, "state") != state) {
       return Result.failure(Exception("SSO state does not match"))
     }
+    prefs.edit().remove(KEY_OAUTH_STATE).remove(KEY_OAUTH_VERIFIER).apply()
     return try {
       val url = buildUrl("/oauth/callback") ?: return Result.failure(Exception("Invalid server URL"))
       val body = JSONObject()

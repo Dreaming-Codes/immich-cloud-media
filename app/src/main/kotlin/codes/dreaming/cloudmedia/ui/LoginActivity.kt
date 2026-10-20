@@ -1,6 +1,7 @@
 package codes.dreaming.cloudmedia.ui
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -317,8 +318,13 @@ class LoginActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { ApiClient.startOAuthLogin(serverUrl) }
             setLoading(false)
-            result.onSuccess { authUrl -> CustomTabsIntent.Builder().build().launchUrl(this@LoginActivity, authUrl.toUri()) }
-                .onFailure { e -> showError(getString(R.string.login_error, e.message)) }
+            result.onSuccess { authUrl ->
+                try {
+                    CustomTabsIntent.Builder().build().launchUrl(this@LoginActivity, authUrl.toUri())
+                } catch (e: ActivityNotFoundException) {
+                    showError(getString(R.string.login_error, e.message))
+                }
+            }.onFailure { e -> showError(getString(R.string.login_error, e.message)) }
         }
     }
 
