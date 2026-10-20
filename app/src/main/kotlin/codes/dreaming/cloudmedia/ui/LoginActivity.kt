@@ -73,9 +73,9 @@ class LoginActivity : AppCompatActivity() {
         binding.loginButton.setOnClickListener { performLogin() }
         binding.logoutButton.setOnClickListener { performLogout() }
 
-        binding.copyEnableCommand.setOnClickListener {
-            copyToClipboard(getString(R.string.adb_enable_command, BuildConfig.APPLICATION_ID))
-        }
+        val enableCommand = getString(R.string.adb_enable_command, BuildConfig.APPLICATION_ID)
+        binding.enableCommandText.text = enableCommand
+        binding.copyEnableCommand.setOnClickListener { copyToClipboard(enableCommand) }
         binding.copyDisableCommand.setOnClickListener {
             copyToClipboard(getString(R.string.adb_disable_command))
         }

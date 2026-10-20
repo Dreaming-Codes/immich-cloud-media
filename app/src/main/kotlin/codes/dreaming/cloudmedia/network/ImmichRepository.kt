@@ -14,6 +14,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import kotlin.math.roundToLong
 
 private const val TAG = "ImmichRepo"
 private const val SYNC_PREFS = "immich_cloud_sync"
@@ -86,7 +87,7 @@ object ImmichRepository {
     // Force-migrate collection ID to trigger a full re-sync when
     // upgrading from older versions that didn't include album assets.
     val storedId = syncPrefs.getString("media_collection_id", null)
-    if (storedId != null && storedId != CURRENT_COLLECTION_VERSION) {
+    if (storedId != null && storedId.substringBefore('#') != CURRENT_COLLECTION_VERSION) {
       syncPrefs.edit().putString("media_collection_id", CURRENT_COLLECTION_VERSION).apply()
       Log.d(TAG, "Migrated media_collection_id from $storedId to $CURRENT_COLLECTION_VERSION")
     }
@@ -248,7 +249,8 @@ object ImmichRepository {
   private data class SyncStreamResult(
     val deletedIds: List<String>,
     val ackIds: List<String>,
-    val mutationCount: Int
+    val mutationCount: Int,
+    val reset: Boolean = false
   )
 
   private class SyncStreamException(val code: Int) : Exception("Sync stream HTTP $code")
@@ -258,13 +260,18 @@ object ImmichRepository {
 
   // Immich v3 rejects AssetsV1 with HTTP 400 and Immich v2 does not know AssetsV2.
   private fun consumeAssetSyncStream(): SyncStreamResult {
-    return try {
+    val result = try {
       consumeSyncStream(listOf(assetSyncType))
     } catch (e: SyncStreamException) {
       if (e.code != 400) throw e
       assetSyncType = if (assetSyncType == "AssetsV2") "AssetsV1" else "AssetsV2"
       consumeSyncStream(listOf(assetSyncType))
     }
+    if (!result.reset) return result
+    // The server dropped this session's checkpoints, so deletions since then are lost; rebuild the picker's copy.
+    ackSyncEvents(result.ackIds)
+    updateMediaCollectionId("$CURRENT_COLLECTION_VERSION#${System.currentTimeMillis()}")
+    return result.copy(ackIds = emptyList())
   }
 
   private fun consumeSyncStream(types: List<String>, reset: Boolean = false): SyncStreamResult {
@@ -300,8 +307,9 @@ object ImmichRepository {
       }
     }
     val ackIds = lastAckByType.values.toList()
-    Log.d(TAG, "consumeSyncStream: ${deletedIds.size} deletes, ${ackIds.size} acks, $mutationCount mutations")
-    return SyncStreamResult(deletedIds, ackIds, mutationCount)
+    val reset = "SyncResetV1" in lastAckByType
+    Log.d(TAG, "consumeSyncStream: ${deletedIds.size} deletes, ${ackIds.size} acks, $mutationCount mutations, reset=$reset")
+    return SyncStreamResult(deletedIds, ackIds, mutationCount, reset)
   }
 
   private fun parseSyncEvent(
@@ -673,6 +681,7 @@ object ImmichRepository {
     ApiClient.getAccessToken()?.let {
       headers["Authorization"] = "Bearer $it"
     }
+    headers["android-allow-cross-domain-redirect"] = "0"
     return headers
   }
 
@@ -893,7 +902,7 @@ object ImmichRepository {
         val h = parts[0].toLong()
         val m = parts[1].toLong()
         val s = parts[2].toDouble()
-        (h * 3600 + m * 60) * 1000 + (s * 1000).toLong()
+        (h * 3600 + m * 60) * 1000 + (s * 1000).roundToLong()
       } else 0
     } catch (_: Exception) { 0 }
   }
