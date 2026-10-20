@@ -17,7 +17,8 @@ import codes.dreaming.cloudmedia.network.QueryResult
 import java.io.FileNotFoundException
 
 private const val TAG = "ImmichCloudMedia"
-private const val CATEGORY_PEOPLE = "immich_people"
+// The picker keys media sets by category id without the authority, so release and debug builds need distinct ids.
+private val CATEGORY_PEOPLE = codes.dreaming.cloudmedia.BuildConfig.APPLICATION_ID + ".people"
 private const val CATEGORY_TYPE_PEOPLE_AND_PETS =
   "com.android.providers.media.MEDIA_CATEGORY_TYPE_PEOPLE_AND_PETS"
 private const val SUGGESTION_TYPE_FACE =
@@ -162,7 +163,13 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
   ): Cursor {
     val cursor = MatrixCursor(MEDIA_CATEGORY_PROJECTION)
     if (parentCategoryId == null) {
-      cursor.addRow(arrayOf(CATEGORY_PEOPLE, "People", CATEGORY_TYPE_PEOPLE_AND_PETS, null, null, null, null))
+      val covers = ImmichRepository.queryPeople().take(4).map { it.coverAssetId }
+      cursor.addRow(
+        arrayOf(
+          CATEGORY_PEOPLE, "People", CATEGORY_TYPE_PEOPLE_AND_PETS,
+          covers.getOrNull(0), covers.getOrNull(1), covers.getOrNull(2), covers.getOrNull(3)
+        )
+      )
     }
     cursor.extras = buildCollectionIdExtras()
     return cursor

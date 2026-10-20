@@ -14,6 +14,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import kotlin.math.roundToLong
 
 private const val TAG = "ImmichRepo"
 private const val SYNC_PREFS = "immich_cloud_sync"
@@ -74,7 +75,9 @@ object ImmichRepository {
   private var localMediaLookupTime: Long = 0
   private const val LOCAL_MEDIA_CACHE_TTL_MS = 2 * 60 * 1000L
 
-  private const val CURRENT_COLLECTION_VERSION = "immich-cloud-v7"
+  private const val CURRENT_COLLECTION_VERSION = "immich-cloud-v10"
+
+  private const val MAX_SEARCH_PAGE_SIZE = 1000
 
   fun initialize(context: Context) {
     appContext = context.applicationContext
@@ -84,7 +87,7 @@ object ImmichRepository {
     // Force-migrate collection ID to trigger a full re-sync when
     // upgrading from older versions that didn't include album assets.
     val storedId = syncPrefs.getString("media_collection_id", null)
-    if (storedId != null && storedId != CURRENT_COLLECTION_VERSION) {
+    if (storedId != null && storedId.substringBefore('#') != CURRENT_COLLECTION_VERSION) {
       syncPrefs.edit().putString("media_collection_id", CURRENT_COLLECTION_VERSION).apply()
       Log.d(TAG, "Migrated media_collection_id from $storedId to $CURRENT_COLLECTION_VERSION")
     }
@@ -112,15 +115,21 @@ object ImmichRepository {
     syncPrefs.edit().putString("media_collection_id", newId).apply()
   }
 
+  private val usesSyncStream: Boolean get() = ApiClient.getApiKey() == null
+
   fun detectAndApplyChanges(): Boolean {
     return try {
-      val (deletedIds, ackIds) = consumeSyncStream(listOf("AssetsV1"))
-      val hasChanges = deletedIds.isNotEmpty() || ackIds.isNotEmpty()
+      if (!usesSyncStream) return detectTimelineChange()
+      val result = consumeAssetSyncStream()
+      // Immich v3 acks a SyncCompleteV1 on every stream, so acks alone are not a change.
+      val hasChanges = result.mutationCount > 0
       if (hasChanges) {
-        pendingDeleteIds = deletedIds.toMutableList()
-        pendingAckIds = ackIds.toMutableList()
+        pendingDeleteIds = result.deletedIds.toMutableList()
+        pendingAckIds = result.ackIds.toMutableList()
         incrementSyncGeneration()
-        Log.d(TAG, "detectAndApplyChanges: sync stream has ${deletedIds.size} deletes, ${ackIds.size} acks, syncGen=$syncGeneration")
+        Log.d(TAG, "detectAndApplyChanges: ${result.mutationCount} mutations, ${result.deletedIds.size} deletes, ${result.ackIds.size} acks, syncGen=$syncGeneration")
+      } else if (result.ackIds.isNotEmpty()) {
+        ackSyncEvents(result.ackIds)
       }
       hasChanges
     } catch (e: Exception) {
@@ -129,18 +138,27 @@ object ImmichRepository {
     }
   }
 
-  fun snapshotCurrentAssetIds() {
-    // Fetch all asset IDs from API and save to tracking file
-    try {
-      val currentIds = fetchAllAssetIds()
-      saveTrackedAssetIds(currentIds)
-      Log.d(TAG, "snapshotCurrentAssetIds: saved ${currentIds.size} IDs")
-    } catch (e: Exception) {
-      Log.e(TAG, "snapshotCurrentAssetIds error", e)
+  // Immich rejects sync endpoints for API keys, so API-key logins detect changes
+  // from the per-month asset counts instead.
+  private fun detectTimelineChange(): Boolean {
+    val url = ApiClient.buildUrl("/timeline/buckets")?.newBuilder()
+      ?.addQueryParameter("visibility", "timeline")
+      ?.build() ?: return false
+    val response = ApiClient.getClient().newCall(Request.Builder().url(url).get().build()).execute()
+    val body = response.use {
+      if (!it.isSuccessful) throw Exception("timeline/buckets HTTP ${it.code}")
+      it.body?.string().orEmpty()
     }
+    val fingerprint = body.hashCode()
+    if (syncPrefs.getInt("timeline_fingerprint", 0) == fingerprint) return false
+    syncPrefs.edit().putInt("timeline_fingerprint", fingerprint).apply()
+    incrementSyncGeneration()
+    Log.d(TAG, "detectTimelineChange: timeline changed, syncGen=$syncGeneration")
+    return true
   }
 
   fun queryDeletedAssets(syncGeneration: Long): List<String> {
+    if (!usesSyncStream) return diffAgainstSnapshot()
     return try {
       val deletedIds: List<String>
       val ackIds: List<String>
@@ -150,25 +168,30 @@ object ImmichRepository {
         pendingDeleteIds.clear()
         pendingAckIds.clear()
       } else {
-        val (d, a) = consumeSyncStream(listOf("AssetsV1"))
-        deletedIds = d
-        ackIds = a
+        val result = consumeAssetSyncStream()
+        deletedIds = result.deletedIds
+        ackIds = result.ackIds
       }
       if (ackIds.isNotEmpty()) ackSyncEvents(ackIds)
       Log.d(TAG, "queryDeletedAssets: found ${deletedIds.size} deleted assets via sync stream")
       deletedIds
     } catch (e: Exception) {
       Log.e(TAG, "queryDeletedAssets sync stream error, falling back to snapshot diff", e)
-      try {
-        val currentIds = fetchAllAssetIds()
-        val previousIds = loadTrackedAssetIds()
-        val deleted = previousIds - currentIds
-        Log.d(TAG, "queryDeletedAssets fallback: previous=${previousIds.size}, current=${currentIds.size}, deleted=${deleted.size}")
-        deleted.toList()
-      } catch (e2: Exception) {
-        Log.e(TAG, "queryDeletedAssets fallback error", e2)
-        emptyList()
-      }
+      diffAgainstSnapshot()
+    }
+  }
+
+  private fun diffAgainstSnapshot(): List<String> {
+    return try {
+      val currentIds = fetchAllAssetIds()
+      val previousIds = loadTrackedAssetIds()
+      saveTrackedAssetIds(currentIds)
+      val deleted = previousIds - currentIds
+      Log.d(TAG, "diffAgainstSnapshot: previous=${previousIds.size}, current=${currentIds.size}, deleted=${deleted.size}")
+      deleted.toList()
+    } catch (e: Exception) {
+      Log.e(TAG, "diffAgainstSnapshot error", e)
+      emptyList()
     }
   }
 
@@ -177,26 +200,26 @@ object ImmichRepository {
     val pageSize = 1000
     var page = 1
     while (true) {
-      val searchUrl = ApiClient.buildUrl("/search/metadata") ?: break
+      val searchUrl = ApiClient.buildUrl("/search/metadata") ?: throw Exception("Invalid server URL")
       val body = JSONObject().apply {
         put("page", page)
         put("size", pageSize)
+        put("visibility", "timeline")
       }
       val request = Request.Builder()
         .url(searchUrl)
         .post(body.toString().toRequestBody("application/json".toMediaType()))
         .build()
-      val response = ApiClient.getClient().newCall(request).execute()
-      if (!response.isSuccessful) { response.close(); break }
-      val json = JSONObject(response.body?.string() ?: "{}")
-      response.close()
-      val assetsObj = json.optJSONObject("assets") ?: break
-      val items = assetsObj.optJSONArray("items") ?: break
-      if (items.length() == 0) break
+      val json = ApiClient.getClient().newCall(request).execute().use {
+        if (!it.isSuccessful) throw Exception("search/metadata HTTP ${it.code}")
+        JSONObject(it.body?.string() ?: "{}")
+      }
+      val assetsObj = json.getJSONObject("assets")
+      val items = assetsObj.getJSONArray("items")
       for (i in 0 until items.length()) {
         ids.add(items.getJSONObject(i).getString("id"))
       }
-      if (items.length() < pageSize) break
+      if (assetsObj.isNull("nextPage")) break
       page++
     }
     return ids
@@ -223,8 +246,36 @@ object ImmichRepository {
     }
   }
 
-  private fun consumeSyncStream(types: List<String>, reset: Boolean = false): Pair<List<String>, List<String>> {
-    val url = ApiClient.buildUrl("/sync/stream") ?: return Pair(emptyList(), emptyList())
+  private data class SyncStreamResult(
+    val deletedIds: List<String>,
+    val ackIds: List<String>,
+    val mutationCount: Int,
+    val reset: Boolean = false
+  )
+
+  private class SyncStreamException(val code: Int) : Exception("Sync stream HTTP $code")
+
+  @Volatile
+  private var assetSyncType = "AssetsV2"
+
+  // Immich v3 rejects AssetsV1 with HTTP 400 and Immich v2 does not know AssetsV2.
+  private fun consumeAssetSyncStream(): SyncStreamResult {
+    val result = try {
+      consumeSyncStream(listOf(assetSyncType))
+    } catch (e: SyncStreamException) {
+      if (e.code != 400) throw e
+      assetSyncType = if (assetSyncType == "AssetsV2") "AssetsV1" else "AssetsV2"
+      consumeSyncStream(listOf(assetSyncType))
+    }
+    if (!result.reset) return result
+    // The server dropped this session's checkpoints, so deletions since then are lost; rebuild the picker's copy.
+    ackSyncEvents(result.ackIds)
+    updateMediaCollectionId("$CURRENT_COLLECTION_VERSION#${System.currentTimeMillis()}")
+    return result.copy(ackIds = emptyList())
+  }
+
+  private fun consumeSyncStream(types: List<String>, reset: Boolean = false): SyncStreamResult {
+    val url = ApiClient.buildUrl("/sync/stream") ?: return SyncStreamResult(emptyList(), emptyList(), 0)
     val bodyJson = JSONObject().apply {
       put("types", JSONArray(types))
       if (reset) put("reset", true)
@@ -237,46 +288,63 @@ object ImmichRepository {
     val response = ApiClient.getClient().newCall(request).execute()
     if (!response.isSuccessful) {
       val code = response.code
+      val errorBody = try { response.body?.string()?.take(500) } catch (_: Exception) { null }
       response.close()
-      throw Exception("Sync stream HTTP $code")
+      Log.e(TAG, "Sync stream HTTP $code body=$errorBody")
+      throw SyncStreamException(code)
     }
 
     val deletedIds = mutableListOf<String>()
-    val ackIds = mutableListOf<String>()
+    // The server keeps only the last ack per type, so the stream never needs more than one each.
+    val lastAckByType = LinkedHashMap<String, String>()
+    var mutationCount = 0
 
-    val responseText = response.body?.string() ?: ""
-    response.close()
-
-    for (line in responseText.lineSequence()) {
-      if (line.isBlank()) continue
-      try {
-        val event = JSONObject(line)
-        val type = event.optString("type")
-        val data = event.optJSONObject("data")
-
-        if (data != null) {
-          if (type.contains("Delete", ignoreCase = true)) {
-            val assetId = data.optString("assetId")
-            if (assetId.isNotBlank()) deletedIds.add(assetId)
-          } else if (type.contains("Asset", ignoreCase = true)) {
-            val deletedAt = data.optString("deletedAt")
-            if (deletedAt.isNotBlank() && deletedAt != "null") {
-              val id = data.optString("id")
-              if (id.isNotBlank()) deletedIds.add(id)
-            }
-          }
-          val dataAck = data.optString("ack")
-          if (dataAck.isNotBlank()) ackIds.add(dataAck)
-        }
-
-        val eventAck = event.optString("ack")
-        if (eventAck.isNotBlank()) ackIds.add(eventAck)
-      } catch (e: Exception) {
-        Log.w(TAG, "Failed to parse sync event: ${line.take(200)}", e)
+    response.use {
+      val source = it.body?.source() ?: return SyncStreamResult(emptyList(), emptyList(), 0)
+      while (true) {
+        val line = source.readUtf8Line() ?: break
+        if (line.isNotBlank()) mutationCount += parseSyncEvent(line, deletedIds, lastAckByType)
       }
     }
-    Log.d(TAG, "consumeSyncStream: ${deletedIds.size} deletes, ${ackIds.size} acks")
-    return Pair(deletedIds, ackIds)
+    val ackIds = lastAckByType.values.toList()
+    val reset = "SyncResetV1" in lastAckByType
+    Log.d(TAG, "consumeSyncStream: ${deletedIds.size} deletes, ${ackIds.size} acks, $mutationCount mutations, reset=$reset")
+    return SyncStreamResult(deletedIds, ackIds, mutationCount, reset)
+  }
+
+  private fun parseSyncEvent(
+    line: String,
+    deletedIds: MutableList<String>,
+    lastAckByType: MutableMap<String, String>
+  ): Int {
+    val event = try {
+      JSONObject(line)
+    } catch (e: Exception) {
+      Log.w(TAG, "Failed to parse sync event: ${line.take(200)}", e)
+      return 0
+    }
+    val type = event.optString("type")
+    val data = event.optJSONObject("data")
+    if (data != null) {
+      if (type.contains("Delete", ignoreCase = true)) {
+        val assetId = data.optString("assetId")
+        if (assetId.isNotBlank()) deletedIds.add(assetId)
+      } else if (type.contains("Asset", ignoreCase = true)) {
+        val deletedAt = data.optString("deletedAt")
+        val visibility = data.optString("visibility")
+        // The picker drops cached rows only when onQueryDeletedMedia reports them.
+        val gone = (deletedAt.isNotBlank() && deletedAt != "null") ||
+          (visibility.isNotBlank() && visibility != "null" && visibility != "timeline")
+        if (gone) {
+          val id = data.optString("id")
+          if (id.isNotBlank()) deletedIds.add(id)
+        }
+      }
+    }
+    val ack = event.optString("ack").ifBlank { data?.optString("ack").orEmpty() }
+    if (ack.isNotBlank()) lastAckByType[ack.substringBefore('|')] = ack
+    val isMutation = type.contains("Asset", ignoreCase = true) || type.contains("Reset", ignoreCase = true)
+    return if (isMutation) 1 else 0
   }
 
   private fun ackSyncEvents(ackIds: List<String>) {
@@ -310,13 +378,16 @@ object ImmichRepository {
     Log.d(TAG, "queryAllAssets: pageSize=$pageSize, pageToken=$pageToken")
     return try {
       val page = pageToken?.toIntOrNull() ?: 1
+      val size = pageSize.coerceIn(1, MAX_SEARCH_PAGE_SIZE)
       if (page == 1) mainSyncAssetIds.clear()
       val url = ApiClient.buildUrl("/search/metadata") ?: return QueryResult(emptyList(), null)
       val body = JSONObject().apply {
         put("page", page)
-        put("size", pageSize)
+        put("size", size)
         put("order", "desc")
         put("withExif", true)
+        // Immich v3 search returns archived and hidden assets unless asked not to.
+        put("visibility", "timeline")
       }
       val request = Request.Builder()
         .url(url)
@@ -336,13 +407,11 @@ object ImmichRepository {
 
       val assets = mutableListOf<ImmichAsset>()
       for (i in 0 until items.length()) {
-        assets.add(assetFromApiJson(items.getJSONObject(i)))
+        assetFromApiJson(items.getJSONObject(i))?.let { assets.add(it) }
       }
       assets.forEach { mainSyncAssetIds.add(it.id) }
 
-      // Use items count vs pageSize to determine if more pages exist.
-      // The API's "total" field is unreliable (equals page count, not global total).
-      var nextToken = if (items.length() >= pageSize) (page + 1).toString() else null
+      val nextToken = if (!assetsObj.isNull("nextPage")) (page + 1).toString() else null
 
       // When the main sync is complete, fetch all album assets and
       // include any that weren't in the /search/metadata results
@@ -370,68 +439,105 @@ object ImmichRepository {
     pageToken: String? = null
   ): QueryResult {
     Log.d(TAG, "queryAlbumAssets: albumId=$albumId")
-    return try {
-      val url = ApiClient.buildUrl("/albums/$albumId") ?: return QueryResult(emptyList(), null)
-      val request = Request.Builder().url(url).get().build()
-      val response = ApiClient.getClient().newCall(request).execute()
-      if (!response.isSuccessful) {
-        Log.e(TAG, "queryAlbumAssets API failed: ${response.code}")
-        response.close()
-        return QueryResult(emptyList(), null)
-      }
-      val body = response.body?.string() ?: "{}"
-      response.close()
-      val obj = JSONObject(body)
-      val assetsArr = obj.optJSONArray("assets") ?: return QueryResult(emptyList(), null)
+    val page = pageToken?.toIntOrNull() ?: 1
+    return retrying("album $albumId page $page") { fetchAlbumAssetsPage(albumId, page, pageSize) }
+      ?: QueryResult(emptyList(), null)
+  }
 
-      val offset = pageToken?.toIntOrNull() ?: 0
-      val end = minOf(offset + pageSize, assetsArr.length())
-      val assets = mutableListOf<ImmichAsset>()
-      for (i in offset until end) {
-        assets.add(assetFromApiJson(assetsArr.getJSONObject(i)))
-      }
-
-      val nextToken = if (end < assetsArr.length()) end.toString() else null
-      QueryResult(assets, nextToken)
-    } catch (e: Exception) {
-      Log.e(TAG, "queryAlbumAssets error", e)
-      QueryResult(emptyList(), null)
+  // Immich v3 dropped the assets array from GET /albums/{id}.
+  private fun fetchAlbumAssetsPage(
+    albumId: String,
+    page: Int,
+    pageSize: Int,
+    timelineOnly: Boolean = false
+  ): QueryResult {
+    val url = ApiClient.buildUrl("/search/metadata")
+      ?: throw Exception("Invalid server URL")
+    val body = JSONObject().apply {
+      put("albumIds", JSONArray().put(albumId))
+      put("page", page)
+      put("size", pageSize.coerceIn(1, MAX_SEARCH_PAGE_SIZE))
+      put("order", "desc")
+      put("withExif", true)
+      if (timelineOnly) put("visibility", "timeline")
     }
+    val request = Request.Builder()
+      .url(url)
+      .post(body.toString().toRequestBody("application/json".toMediaType()))
+      .build()
+    val response = ApiClient.getClient().newCall(request).execute()
+    val responseBody = response.body?.string() ?: "{}"
+    response.close()
+    if (!response.isSuccessful) {
+      throw Exception("search/metadata HTTP ${response.code}")
+    }
+    val assetsObj = JSONObject(responseBody).optJSONObject("assets")
+      ?: throw Exception("search/metadata response missing assets")
+    val items = assetsObj.optJSONArray("items")
+      ?: throw Exception("search/metadata response missing assets.items")
+    val assets = mutableListOf<ImmichAsset>()
+    for (i in 0 until items.length()) {
+      assetFromApiJson(items.getJSONObject(i))?.let { assets.add(it) }
+    }
+    val nextToken = if (!assetsObj.isNull("nextPage")) (page + 1).toString() else null
+    Log.d(
+      TAG,
+      "fetchAlbumAssetsPage: album=$albumId page=$page -> ${items.length()} items, " +
+        "total=${assetsObj.opt("total")}, nextPage=${assetsObj.opt("nextPage")}"
+    )
+    return QueryResult(assets, nextToken)
+  }
+
+  // The picker caches an empty result for a long time, so one transient failure would stick.
+  private inline fun <T> retrying(what: String, block: () -> T): T? {
+    var lastError: Exception? = null
+    repeat(3) {
+      try {
+        return block()
+      } catch (e: Exception) {
+        lastError = e
+      }
+    }
+    Log.e(TAG, "$what failed after 3 attempts", lastError)
+    return null
   }
 
   fun queryAlbums(): List<ImmichAlbum> {
     return try {
-      val url = ApiClient.buildUrl("/albums") ?: return emptyList()
-      val request = Request.Builder().url(url).get().build()
-      val response = ApiClient.getClient().newCall(request).execute()
-      if (!response.isSuccessful) {
-        response.close()
-        return emptyList()
-      }
-      val body = response.body?.string() ?: "[]"
-      response.close()
-      val arr = JSONArray(body)
-      val albums = mutableListOf<ImmichAlbum>()
-      for (i in 0 until arr.length()) {
-        val obj = arr.getJSONObject(i)
-        val assetCount = obj.optInt("assetCount", 0)
-        if (assetCount == 0) continue
-        val thumbId = obj.optString("albumThumbnailAssetId", "")
-        albums.add(
-          ImmichAlbum(
-            id = obj.getString("id"),
-            displayName = obj.getString("albumName"),
-            coverAssetId = if (thumbId.isNotEmpty() && thumbId != "null") thumbId else null,
-            dateTakenMillis = parseIso8601(obj.optString("updatedAt", "")),
-            mediaCount = assetCount
-          )
-        )
-      }
-      albums
+      fetchAlbumsOrThrow()
     } catch (e: Exception) {
       Log.e(TAG, "queryAlbums error", e)
       emptyList()
     }
+  }
+
+  private fun fetchAlbumsOrThrow(): List<ImmichAlbum> {
+    val url = ApiClient.buildUrl("/albums") ?: throw Exception("Invalid server URL")
+    val request = Request.Builder().url(url).get().build()
+    val response = ApiClient.getClient().newCall(request).execute()
+    val body = response.body?.string() ?: "[]"
+    response.close()
+    if (!response.isSuccessful) {
+      throw Exception("albums HTTP ${response.code}")
+    }
+    val arr = JSONArray(body)
+    val albums = mutableListOf<ImmichAlbum>()
+    for (i in 0 until arr.length()) {
+      val obj = arr.getJSONObject(i)
+      val assetCount = obj.optInt("assetCount", 0)
+      if (assetCount == 0) continue
+      val thumbId = obj.optString("albumThumbnailAssetId", "")
+      albums.add(
+        ImmichAlbum(
+          id = obj.getString("id"),
+          displayName = obj.getString("albumName"),
+          coverAssetId = if (thumbId.isNotEmpty() && thumbId != "null") thumbId else null,
+          dateTakenMillis = parseIso8601(obj.optString("updatedAt", "")),
+          mediaCount = assetCount
+        )
+      )
+    }
+    return albums
   }
 
   fun queryPeople(): List<ImmichPerson> {
@@ -439,19 +545,30 @@ object ImmichRepository {
     cachedPeople?.let { cached ->
       if (now - peopleCacheTime < PEOPLE_CACHE_TTL_MS) return cached
     }
-    return try {
-      val url = ApiClient.buildUrl("/people") ?: return emptyList()
+    val people = retrying("people") { fetchPeopleOrThrow() } ?: return emptyList()
+    cachedPeople = people
+    peopleCacheTime = now
+    return people
+  }
+
+  private fun fetchPeopleOrThrow(): List<ImmichPerson> {
+    val people = mutableListOf<ImmichPerson>()
+    var page = 1
+    while (true) {
+      val base = ApiClient.buildUrl("/people") ?: throw Exception("Invalid server URL")
+      val url = base.newBuilder()
+        .addQueryParameter("page", page.toString())
+        .addQueryParameter("size", "1000")
+        .build()
       val request = Request.Builder().url(url).get().build()
       val response = ApiClient.getClient().newCall(request).execute()
-      if (!response.isSuccessful) {
-        response.close()
-        return emptyList()
-      }
       val body = response.body?.string() ?: "{}"
       response.close()
+      if (!response.isSuccessful) {
+        throw Exception("people HTTP ${response.code}")
+      }
       val json = JSONObject(body)
-      val arr = json.optJSONArray("people") ?: return emptyList()
-      val people = mutableListOf<ImmichPerson>()
+      val arr = json.optJSONArray("people") ?: throw Exception("people response missing people[]")
       for (i in 0 until arr.length()) {
         val p = arr.getJSONObject(i)
         val name = p.optString("name", "")
@@ -459,13 +576,10 @@ object ImmichRepository {
         val personId = p.getString("id")
         people.add(ImmichPerson(id = personId, name = name, coverAssetId = "person:$personId"))
       }
-      cachedPeople = people
-      peopleCacheTime = now
-      people
-    } catch (e: Exception) {
-      Log.e(TAG, "queryPeople error", e)
-      emptyList()
+      if (!json.optBoolean("hasNextPage", false)) break
+      page++
     }
+    return people
   }
 
   fun queryPersonAssets(
@@ -479,7 +593,7 @@ object ImmichRepository {
       val body = JSONObject().apply {
         put("personIds", JSONArray().put(personId))
         put("page", page)
-        put("size", pageSize)
+        put("size", pageSize.coerceIn(1, MAX_SEARCH_PAGE_SIZE))
         put("withExif", true)
       }
       val request = Request.Builder()
@@ -498,9 +612,9 @@ object ImmichRepository {
       val items = assetsObj.optJSONArray("items") ?: return QueryResult(emptyList(), null)
       val assets = mutableListOf<ImmichAsset>()
       for (i in 0 until items.length()) {
-        assets.add(assetFromApiJson(items.getJSONObject(i)))
+        assetFromApiJson(items.getJSONObject(i))?.let { assets.add(it) }
       }
-      val nextToken = if (items.length() >= pageSize) (page + 1).toString() else null
+      val nextToken = if (!assetsObj.isNull("nextPage")) (page + 1).toString() else null
       QueryResult(assets, nextToken)
     } catch (e: Exception) {
       Log.e(TAG, "queryPersonAssets error", e)
@@ -519,7 +633,7 @@ object ImmichRepository {
       val body = JSONObject().apply {
         put("query", query)
         put("page", page)
-        put("size", pageSize)
+        put("size", pageSize.coerceIn(1, MAX_SEARCH_PAGE_SIZE))
         put("withExif", true)
       }
       val request = Request.Builder()
@@ -538,9 +652,9 @@ object ImmichRepository {
       val items = assetsObj.optJSONArray("items") ?: return QueryResult(emptyList(), null)
       val assets = mutableListOf<ImmichAsset>()
       for (i in 0 until items.length()) {
-        assets.add(assetFromApiJson(items.getJSONObject(i)))
+        assetFromApiJson(items.getJSONObject(i))?.let { assets.add(it) }
       }
-      val nextToken = if (items.length() >= pageSize) (page + 1).toString() else null
+      val nextToken = if (!assetsObj.isNull("nextPage")) (page + 1).toString() else null
       QueryResult(assets, nextToken)
     } catch (e: Exception) {
       Log.e(TAG, "searchAssets error", e)
@@ -556,6 +670,19 @@ object ImmichRepository {
     }
     val url = ApiClient.buildUrl("/assets/$assetId/original") ?: return null
     return downloadToTempFile(Request.Builder().url(url).get().build(), "media_$assetId")
+  }
+
+  fun videoPlaybackUrl(assetId: String): String? =
+    ApiClient.buildUrl("/assets/$assetId/video/playback")?.toString()
+
+  fun playbackAuthHeaders(): Map<String, String> {
+    val headers = mutableMapOf<String, String>()
+    ApiClient.getApiKey()?.let { headers["x-api-key"] = it }
+    ApiClient.getAccessToken()?.let {
+      headers["Authorization"] = "Bearer $it"
+    }
+    headers["android-allow-cross-domain-redirect"] = "0"
+    return headers
   }
 
   fun openMediaStreaming(assetId: String): ParcelFileDescriptor? {
@@ -615,7 +742,7 @@ object ImmichRepository {
     return try {
       val response = ApiClient.getClient().newCall(request).execute()
       if (!response.isSuccessful) {
-        Log.e(TAG, "Download failed: ${response.code}")
+        Log.e(TAG, "Download failed: ${response.code} for $prefix url=${request.url.encodedPath}")
         response.close()
         return null
       }
@@ -631,9 +758,10 @@ object ImmichRepository {
     }
   }
 
-  private fun assetFromApiJson(a: JSONObject): ImmichAsset {
+  private fun assetFromApiJson(a: JSONObject): ImmichAsset? {
     val id = a.getString("id")
     val type = a.optString("type", "IMAGE")
+    if (type != "IMAGE" && type != "VIDEO") return null
     val isImage = type == "IMAGE"
     val createdAt = a.optString("fileCreatedAt", a.optString("createdAt", ""))
     val originalMimeType = a.optString("originalMimeType", "")
@@ -642,7 +770,7 @@ object ImmichRepository {
     }
     val exifInfo = a.optJSONObject("exifInfo")
     val fileSize = exifInfo?.optLong("fileSizeInByte", 1) ?: 1L
-    val orientation = exifInfo?.optString("orientation", "0")?.toIntOrNull() ?: 0
+    val orientation = exifOrientationToDegrees(exifInfo?.optString("orientation", "")?.toIntOrNull() ?: 0)
     val width = exifInfo?.optInt("exifImageWidth", 0) ?: 0
     val height = exifInfo?.optInt("exifImageHeight", 0) ?: 0
     val duration = a.optString("duration", "")
@@ -668,28 +796,34 @@ object ImmichRepository {
     )
   }
 
+  // Same mapping as androidx ExifInterface.getRotationDegrees.
+  private fun exifOrientationToDegrees(value: Int): Int = when (value) {
+    3, 4 -> 180
+    6, 7 -> 90
+    5, 8 -> 270
+    else -> 0
+  }
+
   private fun fetchAllAlbumOnlyAssets(): List<ImmichAsset> {
     return try {
-      val albums = queryAlbums()
+      val albumList = retrying("album list") { fetchAlbumsOrThrow() } ?: return emptyList()
       val albumOnlyAssets = mutableListOf<ImmichAsset>()
-      for (album in albums) {
-        val url = ApiClient.buildUrl("/albums/${album.id}") ?: continue
-        val request = Request.Builder().url(url).get().build()
-        val response = ApiClient.getClient().newCall(request).execute()
-        if (!response.isSuccessful) { response.close(); continue }
-        val body = response.body?.string() ?: "{}"
-        response.close()
-        val obj = JSONObject(body)
-        val assetsArr = obj.optJSONArray("assets") ?: continue
-        for (i in 0 until assetsArr.length()) {
-          val asset = assetFromApiJson(assetsArr.getJSONObject(i))
-          if (asset.id !in mainSyncAssetIds) {
-            albumOnlyAssets.add(asset)
-            mainSyncAssetIds.add(asset.id)
+      for (album in albumList) {
+        var page = 1
+        while (true) {
+          val result = retrying("album ${album.id} page $page") {
+            fetchAlbumAssetsPage(album.id, page, MAX_SEARCH_PAGE_SIZE, timelineOnly = true)
+          } ?: break
+          for (asset in result.assets) {
+            if (asset.id !in mainSyncAssetIds) {
+              albumOnlyAssets.add(asset)
+              mainSyncAssetIds.add(asset.id)
+            }
           }
+          page = result.nextPageToken?.toIntOrNull() ?: break
         }
       }
-      Log.d(TAG, "fetchAllAlbumOnlyAssets: found ${albumOnlyAssets.size} assets across ${albums.size} albums")
+      Log.d(TAG, "fetchAllAlbumOnlyAssets: found ${albumOnlyAssets.size} assets across ${albumList.size} albums")
       albumOnlyAssets
     } catch (e: Exception) {
       Log.e(TAG, "fetchAllAlbumOnlyAssets error", e)
@@ -760,14 +894,15 @@ object ImmichRepository {
   }
 
   private fun parseDuration(duration: String): Long {
-    if (duration.isBlank() || duration == "0:00:00.00000") return 0
+    if (duration.isBlank() || duration == "null" || duration == "0:00:00.00000") return 0
+    duration.toLongOrNull()?.let { return it }
     return try {
       val parts = duration.split(":")
       if (parts.size == 3) {
         val h = parts[0].toLong()
         val m = parts[1].toLong()
         val s = parts[2].toDouble()
-        (h * 3600 + m * 60 + s.toLong()) * 1000
+        (h * 3600 + m * 60) * 1000 + (s * 1000).roundToLong()
       } else 0
     } catch (_: Exception) { 0 }
   }

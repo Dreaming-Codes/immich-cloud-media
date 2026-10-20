@@ -49,6 +49,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.browser:browser:1.10.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.2")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
