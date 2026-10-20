@@ -55,7 +55,11 @@ class HttpRangeDataSource(private val client: OkHttpClient, private val url: Htt
       val body = response.body ?: throw IOException("Empty response for ${url.encodedPath}")
       when (response.code) {
         206 -> {
-          totalSize = response.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull() ?: -1L
+          val range = response.header("Content-Range").orEmpty()
+          if (range.removePrefix("bytes ").substringBefore('-').toLongOrNull() != position) {
+            throw IOException("Unexpected Content-Range \"$range\" for offset $position")
+          }
+          totalSize = range.substringAfterLast('/').toLongOrNull() ?: -1L
           block = body.bytes()
         }
         200 -> throw IOException("Server ignored the Range header for ${url.encodedPath}")
