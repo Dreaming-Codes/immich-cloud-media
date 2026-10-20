@@ -228,14 +228,16 @@ class LoginActivity : AppCompatActivity() {
         KeyChain.choosePrivateKeyAlias(
             this,
             { alias ->
-                ApiClient.certificateAlias = alias
-                runOnUiThread { updateCertificateButton(alias) }
+                if (alias != null) {
+                    ApiClient.certificateAlias = alias
+                    runOnUiThread { updateCertificateButton(alias) }
+                }
             },
             null,
             null,
             binding.serverUrlInput.text?.toString()?.trim()?.let { Uri.parse(it).host },
             -1,
-            null,
+            ApiClient.certificateAlias,
         )
     }
 

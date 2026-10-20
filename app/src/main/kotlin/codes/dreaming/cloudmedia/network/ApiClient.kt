@@ -24,6 +24,7 @@ import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509KeyManager
 import javax.net.ssl.X509TrustManager
@@ -239,7 +240,7 @@ object ApiClient {
         Log.e(TAG, "Failed to load client certificate", e)
         null
       }
-      loaded = alias to value
+      if (value != null) loaded = alias to value
       return value
     }
 
@@ -247,11 +248,14 @@ object ApiClient {
 
     fun forget() { loaded = null }
 
-    override fun chooseClientAlias(keyType: Array<out String>?, issuers: Array<out Principal>?, socket: Socket?): String? =
-      certificateAlias?.takeIf { entry(it) != null }
+    // A redirect can lead to another host, so only the configured server gets the certificate.
+    override fun chooseClientAlias(keyType: Array<out String>?, issuers: Array<out Principal>?, socket: Socket?): String? {
+      val peerHost = (socket as? SSLSocket)?.handshakeSession?.peerHost ?: socket?.inetAddress?.hostName
+      if (peerHost == null || !peerHost.equals(serverUrl?.toHttpUrlOrNull()?.host, ignoreCase = true)) return null
+      return certificateAlias?.takeIf { entry(it) != null }
+    }
 
-    override fun getClientAliases(keyType: String?, issuers: Array<out Principal>?): Array<String>? =
-      chooseClientAlias(null, issuers, null)?.let { arrayOf(it) }
+    override fun getClientAliases(keyType: String?, issuers: Array<out Principal>?): Array<String>? = null
 
     override fun getPrivateKey(alias: String?): PrivateKey? = alias?.let { entry(it)?.first }
 
