@@ -39,10 +39,10 @@ private const val KEY_CERTIFICATE_ALIAS = "certificate_alias"
 object ApiClient {
   private const val CACHE_SIZE_BYTES = 100L * 1024 * 1024
 
-  private lateinit var appContext: Context
   private lateinit var prefs: SharedPreferences
-  private lateinit var client: OkHttpClient
-  private var keyManager: X509KeyManager? = null
+  @Volatile private lateinit var client: OkHttpClient
+  private lateinit var keyManager: KeyChainKeyManager
+  private lateinit var cache: Cache
   private var initialized = false
 
   fun initialize(context: Context) {
@@ -50,25 +50,21 @@ object ApiClient {
     synchronized(this) {
       if (initialized) return
 
-      appContext = context.applicationContext
+      val appContext = context.applicationContext
       prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+      keyManager = KeyChainKeyManager(appContext)
 
-      buildClient(appContext)
+      cache = Cache(File(appContext.cacheDir, "okhttp_api").apply { mkdirs() }, CACHE_SIZE_BYTES)
+      client = buildClient()
       initialized = true
     }
   }
 
   fun getClient(): OkHttpClient = client
-  fun getKeyManager(): X509KeyManager? = keyManager
-  @Synchronized
-  private fun buildClient(context: Context) {
-    val alias = certificateAlias
-    keyManager = alias?.let { runCatching { buildKeyManager(it, context) }.getOrNull() }
 
-    val cacheDir = File(context.cacheDir, "okhttp_api")
-
-    client = OkHttpClient.Builder()
-      .applyMtls(keyManager)
+  private fun buildClient(): OkHttpClient {
+    return OkHttpClient.Builder()
+      .clientCertificates(keyManager)
       .cookieJar(TokenCookieJar())
       .addInterceptor { chain ->
         val original = chain.request()
@@ -81,9 +77,19 @@ object ApiClient {
       }
       .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
       .dispatcher(Dispatcher().apply { maxRequestsPerHost = 32 })
-      .cache(Cache(cacheDir.apply { mkdirs() }, CACHE_SIZE_BYTES))
+      .cache(cache)
       .build()
   }
+
+  // A new SSLContext drops TLS sessions resumed with the previous client certificate.
+  private fun replaceClient() {
+    val old = client
+    client = buildClient()
+    old.connectionPool.evictAll()
+  }
+
+  // Call off the main thread.
+  fun hasUsableCertificate(): Boolean = certificateAlias?.let { keyManager.isUsable(it) } ?: true
 
   var serverUrl: String?
     get() = prefs.getString(KEY_SERVER_URL, null)?.trimEnd('/')
@@ -97,8 +103,8 @@ object ApiClient {
     get() = prefs.getString(KEY_CERTIFICATE_ALIAS, null)
     set(value) {
       prefs.edit().putString(KEY_CERTIFICATE_ALIAS, value).apply()
-      client.connectionPool.evictAll()
-      buildClient(appContext)
+      keyManager.forget()
+      replaceClient()
     }
 
   val isLoggedIn: Boolean
@@ -123,6 +129,8 @@ object ApiClient {
       .remove(KEY_ACCOUNT_NAME)
       .remove(KEY_CERTIFICATE_ALIAS)
       .apply()
+    keyManager.forget()
+    replaceClient()
   }
 
   fun buildUrl(path: String): HttpUrl? {
@@ -217,62 +225,49 @@ object ApiClient {
     }
   }
 
-  fun buildKeyManager(alias: String, context: Context): X509KeyManager? {
-    return try {
-      val privateKey = KeyChain.getPrivateKey(context, alias) ?: return null
-      val certChain = KeyChain.getCertificateChain(context, alias) ?: return null
+  // KeyChain blocks and must not run on the main thread, so the key loads during the TLS handshake.
+  private class KeyChainKeyManager(private val context: Context) : X509KeyManager {
+    @Volatile private var loaded: Pair<String, Pair<PrivateKey, Array<X509Certificate>>?>? = null
 
-      object : X509KeyManager {
-        override fun getPrivateKey(requestedAlias: String?): PrivateKey? {
-          if (requestedAlias != alias) return null
-          return privateKey
-        }
-        override fun getCertificateChain(requestedAlias: String?): Array<X509Certificate>? {
-          if (requestedAlias != alias) return null
-          return certChain
-        }
-
-        override fun chooseClientAlias(
-          keyType: Array<out String>?,
-          issuers: Array<out Principal>?,
-          socket: Socket?
-        ): String = alias
-        override fun getClientAliases(
-          keyType: String?,
-          issuers: Array<out Principal>?
-        ): Array<String> = arrayOf(alias)
-
-        override fun chooseServerAlias(
-          keyType: String?,
-          issuers: Array<out Principal>?,
-          socket: Socket?
-        ): String? = null
-        override fun getServerAliases(
-          keyType: String?,
-          issuers: Array<out Principal>?
-        ): Array<String>? = null
+    private fun entry(alias: String): Pair<PrivateKey, Array<X509Certificate>>? {
+      loaded?.let { (cached, value) -> if (cached == alias) return value }
+      val value = try {
+        val key = KeyChain.getPrivateKey(context, alias)
+        val chain = KeyChain.getCertificateChain(context, alias)
+        if (key != null && chain != null) key to chain else null
+      } catch (e: Exception) {
+        Log.e(TAG, "Failed to load client certificate", e)
+        null
       }
-
-    } catch (e: Exception) {
-      Log.e(TAG, "Failed to load certificate", e)
-      null
+      loaded = alias to value
+      return value
     }
+
+    fun isUsable(alias: String): Boolean = entry(alias) != null
+
+    fun forget() { loaded = null }
+
+    override fun chooseClientAlias(keyType: Array<out String>?, issuers: Array<out Principal>?, socket: Socket?): String? =
+      certificateAlias?.takeIf { entry(it) != null }
+
+    override fun getClientAliases(keyType: String?, issuers: Array<out Principal>?): Array<String>? =
+      chooseClientAlias(null, issuers, null)?.let { arrayOf(it) }
+
+    override fun getPrivateKey(alias: String?): PrivateKey? = alias?.let { entry(it)?.first }
+
+    override fun getCertificateChain(alias: String?): Array<X509Certificate>? = alias?.let { entry(it)?.second }
+
+    override fun chooseServerAlias(keyType: String?, issuers: Array<out Principal>?, socket: Socket?): String? = null
+
+    override fun getServerAliases(keyType: String?, issuers: Array<out Principal>?): Array<String>? = null
   }
 
-  private fun OkHttpClient.Builder.applyMtls(keyManager: X509KeyManager?): OkHttpClient.Builder {
-    if (keyManager == null) return this
-
-    val trustManagerFactory = TrustManagerFactory.getInstance(
-      TrustManagerFactory.getDefaultAlgorithm(),
-    )
+  private fun OkHttpClient.Builder.clientCertificates(keyManager: X509KeyManager): OkHttpClient.Builder {
+    val trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
     trustManagerFactory.init(null as KeyStore?)
-    val trustManager = trustManagerFactory.trustManagers
-      .filterIsInstance<X509TrustManager>()
-      .first()
-
+    val trustManager = trustManagerFactory.trustManagers.filterIsInstance<X509TrustManager>().first()
     val sslContext = SSLContext.getInstance("TLS")
     sslContext.init(arrayOf(keyManager), arrayOf(trustManager), null)
-
     return sslSocketFactory(sslContext.socketFactory, trustManager)
   }
 

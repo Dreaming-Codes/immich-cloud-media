@@ -233,7 +233,7 @@ class LoginActivity : AppCompatActivity() {
             },
             null,
             null,
-            ApiClient.serverUrl,
+            binding.serverUrlInput.text?.toString()?.trim()?.let { Uri.parse(it).host },
             -1,
             null,
         )
@@ -245,16 +245,13 @@ class LoginActivity : AppCompatActivity() {
             showError(getString(R.string.server_url_required))
             return
         }
-        if (ApiClient.certificateAlias != null && ApiClient.getKeyManager() == null) {
-            showError(getString(R.string.invalid_certificate))
-            return
-        }
-
         setLoading(true)
 
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
-                if (useApiKey) {
+                if (!ApiClient.hasUsableCertificate()) {
+                    Result.failure(Exception(getString(R.string.invalid_certificate)))
+                } else if (useApiKey) {
                     val apiKey = binding.apiKeyInput.text?.toString()?.trim() ?: ""
                     ApiClient.loginWithApiKey(serverUrl, apiKey)
                 } else {
