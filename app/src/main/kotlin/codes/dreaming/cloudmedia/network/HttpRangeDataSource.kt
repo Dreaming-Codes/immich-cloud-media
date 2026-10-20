@@ -58,20 +58,7 @@ class HttpRangeDataSource(private val client: OkHttpClient, private val url: Htt
           totalSize = response.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull() ?: -1L
           block = body.bytes()
         }
-        200 -> {
-          totalSize = body.contentLength()
-          val source = body.source()
-          source.skip(position)
-          block = ByteArray(BLOCK_SIZE).let { bytes ->
-            var read = 0
-            while (read < bytes.size) {
-              val n = source.read(bytes, read, bytes.size - read)
-              if (n < 0) break
-              read += n
-            }
-            bytes.copyOf(read)
-          }
-        }
+        200 -> throw IOException("Server ignored the Range header for ${url.encodedPath}")
         416 -> block = ByteArray(0)
         else -> throw IOException("HTTP ${response.code} for ${url.encodedPath}")
       }
