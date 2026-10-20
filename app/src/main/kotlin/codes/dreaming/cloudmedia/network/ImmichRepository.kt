@@ -893,7 +893,7 @@ object ImmichRepository {
         val h = parts[0].toLong()
         val m = parts[1].toLong()
         val s = parts[2].toDouble()
-        (h * 3600 + m * 60 + s.toLong()) * 1000
+        (h * 3600 + m * 60) * 1000 + (s * 1000).toLong()
       } else 0
     } catch (_: Exception) { 0 }
   }
