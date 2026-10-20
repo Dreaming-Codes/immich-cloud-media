@@ -358,7 +358,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="@string/adb_disable_command"
+                    android:id="@+id/disable_command_text"
                     android:textAppearance="?attr/textAppearanceBodySmall"
                     android:fontFamily="monospace"
                     android:layout_marginEnd="8dp" />

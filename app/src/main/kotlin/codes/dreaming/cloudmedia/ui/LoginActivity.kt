@@ -13,10 +13,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import codes.dreaming.cloudmedia.BuildConfig
 import codes.dreaming.cloudmedia.R
 import codes.dreaming.cloudmedia.databinding.ActivityLoginBinding
 import codes.dreaming.cloudmedia.network.ApiClient
+import codes.dreaming.cloudmedia.util.CloudProviderCommand
 import codes.dreaming.cloudmedia.util.ShizukuHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -73,12 +73,12 @@ class LoginActivity : AppCompatActivity() {
         binding.loginButton.setOnClickListener { performLogin() }
         binding.logoutButton.setOnClickListener { performLogout() }
 
-        val enableCommand = getString(R.string.adb_enable_command, BuildConfig.APPLICATION_ID)
+        val enableCommand = "adb shell ${CloudProviderCommand.enable}"
+        val disableCommand = "adb shell ${CloudProviderCommand.disable}"
         binding.enableCommandText.text = enableCommand
+        binding.disableCommandText.text = disableCommand
         binding.copyEnableCommand.setOnClickListener { copyToClipboard(enableCommand) }
-        binding.copyDisableCommand.setOnClickListener {
-            copyToClipboard(getString(R.string.adb_disable_command))
-        }
+        binding.copyDisableCommand.setOnClickListener { copyToClipboard(disableCommand) }
 
         // Shizuku setup
         Shizuku.addBinderReceivedListener(binderReceivedListener)

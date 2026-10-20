@@ -34,13 +34,9 @@ object ShizukuHelper {
         Shizuku.requestPermission(requestCode)
     }
 
-    suspend fun enableProvider(): Result<String> = runShellCommand(
-        "device_config override mediaprovider allowed_cloud_providers ${BuildConfig.APPLICATION_ID}"
-    )
+    suspend fun enableProvider(): Result<String> = runShellCommand(CloudProviderCommand.enable)
 
-    suspend fun disableProvider(): Result<String> = runShellCommand(
-        "device_config clear_override mediaprovider allowed_cloud_providers"
-    )
+    suspend fun disableProvider(): Result<String> = runShellCommand(CloudProviderCommand.disable)
 
     private suspend fun runShellCommand(command: String): Result<String> = withContext(Dispatchers.IO) {
         try {

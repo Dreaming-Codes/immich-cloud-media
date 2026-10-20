@@ -18,17 +18,19 @@ Or download the latest APK from the [Releases](https://github.com/Dreaming-Codes
 ## Setup
 
 1. Install the app and log in with your Immich server URL and credentials (email/password or API key).
-2. Enable the cloud media provider via ADB (the app provides ready-to-copy commands):
+2. Enable the cloud media provider via ADB. The app shows the right command for your Android version, ready to copy, and can also run it through Shizuku.
 
 ```sh
-# Set Immich Cloud Photos as the cloud media provider
+# Android 15 and later
 adb shell device_config override mediaprovider allowed_cloud_providers codes.dreaming.cloudmedia
 
-# For the debug build
-adb shell device_config override mediaprovider allowed_cloud_providers codes.dreaming.cloudmedia.debug
+# Android 14
+adb shell device_config put mediaprovider allowed_cloud_providers codes.dreaming.cloudmedia
 ```
 
-3. Open any app's photo picker — your Immich library will appear as a cloud source.
+For the debug build, use `codes.dreaming.cloudmedia.debug`. Android 14 has no `override` command. A server flag sync can reset a value set with `put`, so run it again if Immich disappears from the picker. If the picker does not show Immich right away, reboot the phone.
+
+3. Open any app's photo picker. Your Immich library appears as a cloud source.
 
 ## Features
 
