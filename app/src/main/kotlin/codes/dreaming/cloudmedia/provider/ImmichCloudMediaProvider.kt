@@ -289,8 +289,7 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
     config: Bundle,
     callback: CloudMediaSurfaceStateChangedCallback
   ): CloudMediaSurfaceController {
-    val ctx = context ?: throw IllegalStateException("Provider not attached")
-    return ImmichSurfaceController(ctx, config, callback)
+    return ImmichSurfaceController(config, callback)
   }
 
   private fun buildMediaCursor(result: QueryResult): MatrixCursor {

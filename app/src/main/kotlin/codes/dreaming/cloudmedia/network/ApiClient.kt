@@ -81,6 +81,15 @@ object ApiClient {
         }
         chain.proceed(builder.build())
       }
+      // OkHttp copies these headers onto redirects, so drop them when a redirect leaves the server.
+      .addNetworkInterceptor { chain ->
+        val request = chain.request()
+        if (request.url.host.equals(serverUrl?.toHttpUrlOrNull()?.host, ignoreCase = true)) {
+          chain.proceed(request)
+        } else {
+          chain.proceed(request.newBuilder().removeHeader("x-api-key").removeHeader("Cookie").build())
+        }
+      }
       .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
       .dispatcher(Dispatcher().apply { maxRequestsPerHost = 32 })
       .cache(cache)

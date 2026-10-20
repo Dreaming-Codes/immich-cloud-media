@@ -4,6 +4,7 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Point
+import android.media.MediaDataSource
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
@@ -672,18 +673,8 @@ object ImmichRepository {
     return downloadToTempFile(Request.Builder().url(url).get().build(), "media_$assetId")
   }
 
-  fun videoPlaybackUrl(assetId: String): String? =
-    ApiClient.buildUrl("/assets/$assetId/video/playback")?.toString()
-
-  fun playbackAuthHeaders(): Map<String, String> {
-    val headers = mutableMapOf<String, String>()
-    ApiClient.getApiKey()?.let { headers["x-api-key"] = it }
-    ApiClient.getAccessToken()?.let {
-      headers["Authorization"] = "Bearer $it"
-    }
-    headers["android-allow-cross-domain-redirect"] = "0"
-    return headers
-  }
+  fun videoDataSource(assetId: String): MediaDataSource? =
+    ApiClient.buildUrl("/assets/$assetId/video/playback")?.let { HttpRangeDataSource(ApiClient.getClient(), it) }
 
   fun openMediaStreaming(assetId: String): ParcelFileDescriptor? {
     Log.d(TAG, "openMediaStreaming: assetId=$assetId")

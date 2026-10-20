@@ -1,11 +1,9 @@
 package codes.dreaming.cloudmedia.provider
 
 import android.content.ContentResolver
-import android.content.Context
 import android.graphics.Point
 import android.media.AudioAttributes
 import android.media.MediaPlayer
-import android.net.Uri
 import android.os.Bundle
 import android.provider.CloudMediaProvider.CloudMediaSurfaceController
 import android.provider.CloudMediaProvider.CloudMediaSurfaceStateChangedCallback
@@ -18,7 +16,6 @@ import java.util.concurrent.ConcurrentHashMap
 private const val TAG = "ImmichSurface"
 
 class ImmichSurfaceController(
-  private val context: Context,
   private val config: Bundle,
   private val callback: CloudMediaSurfaceStateChangedCallback
 ) : CloudMediaSurfaceController() {
@@ -113,8 +110,8 @@ class ImmichSurfaceController(
 
     Thread {
       try {
-        val playbackUrl = ImmichRepository.videoPlaybackUrl(mediaId)
-        if (playbackUrl == null) {
+        val dataSource = ImmichRepository.videoDataSource(mediaId)
+        if (dataSource == null) {
           reportError(surfaceId)
           return@Thread
         }
@@ -127,7 +124,7 @@ class ImmichSurfaceController(
             .build()
         )
         player.setSurface(surface)
-        player.setDataSource(context, Uri.parse(playbackUrl), ImmichRepository.playbackAuthHeaders())
+        player.setDataSource(dataSource)
         player.isLooping = loopingEnabled
         val volume = if (audioMuted) 0f else 1f
         player.setVolume(volume, volume)
