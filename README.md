@@ -17,7 +17,7 @@ Or download the latest APK from the [Releases](https://github.com/Dreaming-Codes
 
 ## Setup
 
-1. Install the app and log in with your Immich server URL and credentials (email/password or API key).
+1. Install the app and log in with your Immich server URL and credentials (email/password or API key). If you use an API key, give it the [six permissions below](#an-api-key-needs-six-permissions).
 2. Enable the cloud media provider via ADB. The app shows the right command for your Android version, ready to copy, and can also run it through Shizuku.
 
 ```sh
@@ -31,6 +31,21 @@ adb shell device_config put mediaprovider allowed_cloud_providers codes.dreaming
 For the debug build, use `codes.dreaming.cloudmedia.debug`. Android 14 has no `override` command. A server flag sync can reset a value set with `put`, so run it again if Immich disappears from the picker. If the picker does not show Immich right away, reboot the phone.
 
 3. Open any app's photo picker. Your Immich library appears as a cloud source.
+
+## An API key needs six permissions
+
+If you log in with an API key, give the key these permissions in Immich under **Account Settings** > **API Keys**. Email/password and SSO logins do not use them. Endpoint paths are relative to your server's `/api`.
+
+| Permission | Endpoints the app calls | Used for |
+| --- | --- | --- |
+| `user.read` | `GET /users/me` | Checking the key at login and showing the account name |
+| `album.read` | `GET /albums` | Listing albums |
+| `asset.read` | `GET /timeline/buckets`, `POST /search/metadata`, `POST /search/smart` | Listing the timeline, album contents, and search results, and detecting new and deleted photos |
+| `asset.view` | `GET /assets/{id}/thumbnail`, `GET /assets/{id}/video/playback` | Thumbnails, previews, and video playback |
+| `asset.download` | `GET /assets/{id}/original` | Full-resolution files |
+| `person.read` | `GET /people`, `GET /people/{id}/thumbnail` | People and their face thumbnails |
+
+A key with `all` also works. The key does not need `sync.stream`. With an API key, the app checks `GET /timeline/buckets` for changes and never calls the sync endpoints, because Immich 3 rejects API keys there.
 
 ## Features
 
