@@ -17,9 +17,7 @@ import codes.dreaming.cloudmedia.network.QueryResult
 import java.io.FileNotFoundException
 
 private const val TAG = "ImmichCloudMedia"
-// Namespaced per applicationId: the picker's media_sets table is UNIQUE(category_id,
-// media_set_id, mime_type_filter) WITHOUT authority, so a category id shared with
-// another installed Immich provider makes our rows uninsertable and invisible.
+// The picker keys media sets by category id without the authority, so release and debug builds need distinct ids.
 private val CATEGORY_PEOPLE = codes.dreaming.cloudmedia.BuildConfig.APPLICATION_ID + ".people"
 private const val CATEGORY_TYPE_PEOPLE_AND_PETS =
   "com.android.providers.media.MEDIA_CATEGORY_TYPE_PEOPLE_AND_PETS"
@@ -163,7 +161,6 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
     extras: Bundle,
     cancellationSignal: CancellationSignal?
   ): Cursor {
-    Log.d(TAG, "onQueryMediaCategories: parentCategoryId=$parentCategoryId extras=$extras")
     val cursor = MatrixCursor(MEDIA_CATEGORY_PROJECTION)
     if (parentCategoryId == null) {
       val covers = ImmichRepository.queryPeople().take(4).map { it.coverAssetId }
@@ -191,7 +188,6 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
         cursor.addRow(arrayOf(person.id, person.name, null, person.coverAssetId))
       }
     }
-    Log.d(TAG, "onQueryMediaSets: categoryId=$mediaCategoryId -> ${cursor.count} sets, extras=$extras")
     cursor.extras = buildCollectionIdExtras()
     return cursor
   }

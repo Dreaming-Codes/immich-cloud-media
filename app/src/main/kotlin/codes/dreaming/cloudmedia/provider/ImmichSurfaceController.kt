@@ -113,8 +113,6 @@ class ImmichSurfaceController(
 
     Thread {
       try {
-        // Stream Immich's playback endpoint (serves the transcoded video with
-        // range support) instead of downloading the full original first.
         val playbackUrl = ImmichRepository.videoPlaybackUrl(mediaId)
         if (playbackUrl == null) {
           reportError(surfaceId)

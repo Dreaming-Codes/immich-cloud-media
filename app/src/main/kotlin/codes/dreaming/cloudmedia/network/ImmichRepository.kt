@@ -76,7 +76,6 @@ object ImmichRepository {
 
   private const val CURRENT_COLLECTION_VERSION = "immich-cloud-v10"
 
-  // MetadataSearchDto.size is capped at 1000 server-side; larger values fail validation.
   private const val MAX_SEARCH_PAGE_SIZE = 1000
 
   fun initialize(context: Context) {
@@ -115,11 +114,13 @@ object ImmichRepository {
     syncPrefs.edit().putString("media_collection_id", newId).apply()
   }
 
+  private val usesSyncStream: Boolean get() = ApiClient.getApiKey() == null
+
   fun detectAndApplyChanges(): Boolean {
     return try {
+      if (!usesSyncStream) return detectTimelineChange()
       val result = consumeAssetSyncStream()
-      // v3 ends every stream with an acked SyncCompleteV1, so acks alone
-      // don't mean anything changed — only actual asset mutation events do.
+      // Immich v3 acks a SyncCompleteV1 on every stream, so acks alone are not a change.
       val hasChanges = result.mutationCount > 0
       if (hasChanges) {
         pendingDeleteIds = result.deletedIds.toMutableList()
@@ -136,18 +137,27 @@ object ImmichRepository {
     }
   }
 
-  fun snapshotCurrentAssetIds() {
-    // Fetch all asset IDs from API and save to tracking file
-    try {
-      val currentIds = fetchAllAssetIds()
-      saveTrackedAssetIds(currentIds)
-      Log.d(TAG, "snapshotCurrentAssetIds: saved ${currentIds.size} IDs")
-    } catch (e: Exception) {
-      Log.e(TAG, "snapshotCurrentAssetIds error", e)
+  // Immich rejects sync endpoints for API keys, so API-key logins detect changes
+  // from the per-month asset counts instead.
+  private fun detectTimelineChange(): Boolean {
+    val url = ApiClient.buildUrl("/timeline/buckets")?.newBuilder()
+      ?.addQueryParameter("visibility", "timeline")
+      ?.build() ?: return false
+    val response = ApiClient.getClient().newCall(Request.Builder().url(url).get().build()).execute()
+    val body = response.use {
+      if (!it.isSuccessful) throw Exception("timeline/buckets HTTP ${it.code}")
+      it.body?.string().orEmpty()
     }
+    val fingerprint = body.hashCode()
+    if (syncPrefs.getInt("timeline_fingerprint", 0) == fingerprint) return false
+    syncPrefs.edit().putInt("timeline_fingerprint", fingerprint).apply()
+    incrementSyncGeneration()
+    Log.d(TAG, "detectTimelineChange: timeline changed, syncGen=$syncGeneration")
+    return true
   }
 
   fun queryDeletedAssets(syncGeneration: Long): List<String> {
+    if (!usesSyncStream) return diffAgainstSnapshot()
     return try {
       val deletedIds: List<String>
       val ackIds: List<String>
@@ -166,16 +176,21 @@ object ImmichRepository {
       deletedIds
     } catch (e: Exception) {
       Log.e(TAG, "queryDeletedAssets sync stream error, falling back to snapshot diff", e)
-      try {
-        val currentIds = fetchAllAssetIds()
-        val previousIds = loadTrackedAssetIds()
-        val deleted = previousIds - currentIds
-        Log.d(TAG, "queryDeletedAssets fallback: previous=${previousIds.size}, current=${currentIds.size}, deleted=${deleted.size}")
-        deleted.toList()
-      } catch (e2: Exception) {
-        Log.e(TAG, "queryDeletedAssets fallback error", e2)
-        emptyList()
-      }
+      diffAgainstSnapshot()
+    }
+  }
+
+  private fun diffAgainstSnapshot(): List<String> {
+    return try {
+      val currentIds = fetchAllAssetIds()
+      val previousIds = loadTrackedAssetIds()
+      saveTrackedAssetIds(currentIds)
+      val deleted = previousIds - currentIds
+      Log.d(TAG, "diffAgainstSnapshot: previous=${previousIds.size}, current=${currentIds.size}, deleted=${deleted.size}")
+      deleted.toList()
+    } catch (e: Exception) {
+      Log.e(TAG, "diffAgainstSnapshot error", e)
+      emptyList()
     }
   }
 
@@ -184,7 +199,7 @@ object ImmichRepository {
     val pageSize = 1000
     var page = 1
     while (true) {
-      val searchUrl = ApiClient.buildUrl("/search/metadata") ?: break
+      val searchUrl = ApiClient.buildUrl("/search/metadata") ?: throw Exception("Invalid server URL")
       val body = JSONObject().apply {
         put("page", page)
         put("size", pageSize)
@@ -194,17 +209,16 @@ object ImmichRepository {
         .url(searchUrl)
         .post(body.toString().toRequestBody("application/json".toMediaType()))
         .build()
-      val response = ApiClient.getClient().newCall(request).execute()
-      if (!response.isSuccessful) { response.close(); break }
-      val json = JSONObject(response.body?.string() ?: "{}")
-      response.close()
-      val assetsObj = json.optJSONObject("assets") ?: break
-      val items = assetsObj.optJSONArray("items") ?: break
-      if (items.length() == 0) break
+      val json = ApiClient.getClient().newCall(request).execute().use {
+        if (!it.isSuccessful) throw Exception("search/metadata HTTP ${it.code}")
+        JSONObject(it.body?.string() ?: "{}")
+      }
+      val assetsObj = json.getJSONObject("assets")
+      val items = assetsObj.getJSONArray("items")
       for (i in 0 until items.length()) {
         ids.add(items.getJSONObject(i).getString("id"))
       }
-      if (items.length() < pageSize) break
+      if (assetsObj.isNull("nextPage")) break
       page++
     }
     return ids
@@ -231,34 +245,26 @@ object ImmichRepository {
     }
   }
 
-  data class SyncStreamResult(
+  private data class SyncStreamResult(
     val deletedIds: List<String>,
     val ackIds: List<String>,
     val mutationCount: Int
   )
 
-  @Volatile
-  private var preferAssetsV1 = false
+  private class SyncStreamException(val code: Int) : Exception("Sync stream HTTP $code")
 
-  // Immich v3+ rejects AssetsV1 as deprecated; pre-v3 servers don't know AssetsV2.
-  // A 400 on the cached preference invalidates it so a server upgrade mid-process recovers.
+  @Volatile
+  private var assetSyncType = "AssetsV2"
+
+  // Immich v3 rejects AssetsV1 with HTTP 400 and Immich v2 does not know AssetsV2.
   private fun consumeAssetSyncStream(): SyncStreamResult {
-    if (preferAssetsV1) {
-      try {
-        return consumeSyncStream(listOf("AssetsV1"))
-      } catch (e: Exception) {
-        if (e.message?.contains("HTTP 400") != true) throw e
-        preferAssetsV1 = false
-      }
+    return try {
+      consumeSyncStream(listOf(assetSyncType))
+    } catch (e: SyncStreamException) {
+      if (e.code != 400) throw e
+      assetSyncType = if (assetSyncType == "AssetsV2") "AssetsV1" else "AssetsV2"
+      consumeSyncStream(listOf(assetSyncType))
     }
-    try {
-      return consumeSyncStream(listOf("AssetsV2"))
-    } catch (e: Exception) {
-      if (e.message?.contains("HTTP 400") != true) throw e
-    }
-    val result = consumeSyncStream(listOf("AssetsV1"))
-    preferAssetsV1 = true
-    return result
   }
 
   private fun consumeSyncStream(types: List<String>, reset: Boolean = false): SyncStreamResult {
@@ -278,55 +284,59 @@ object ImmichRepository {
       val errorBody = try { response.body?.string()?.take(500) } catch (_: Exception) { null }
       response.close()
       Log.e(TAG, "Sync stream HTTP $code body=$errorBody")
-      throw Exception("Sync stream HTTP $code")
+      throw SyncStreamException(code)
     }
 
     val deletedIds = mutableListOf<String>()
-    val ackIds = mutableListOf<String>()
+    // The server keeps only the last ack per type, so the stream never needs more than one each.
+    val lastAckByType = LinkedHashMap<String, String>()
     var mutationCount = 0
 
-    val responseText = response.body?.string() ?: ""
-    response.close()
-
-    for (line in responseText.lineSequence()) {
-      if (line.isBlank()) continue
-      try {
-        val event = JSONObject(line)
-        val type = event.optString("type")
-        val data = event.optJSONObject("data")
-
-        if (type.contains("Asset", ignoreCase = true) || type.contains("Reset", ignoreCase = true)) {
-          mutationCount++
-        }
-
-        if (data != null) {
-          if (type.contains("Delete", ignoreCase = true)) {
-            val assetId = data.optString("assetId")
-            if (assetId.isNotBlank()) deletedIds.add(assetId)
-          } else if (type.contains("Asset", ignoreCase = true)) {
-            val deletedAt = data.optString("deletedAt")
-            val visibility = data.optString("visibility")
-            // Archived/hidden assets leave the timeline feed, but the picker only
-            // drops cached rows reported through onQueryDeletedMedia.
-            val gone = (deletedAt.isNotBlank() && deletedAt != "null") ||
-              (visibility.isNotBlank() && visibility != "null" && visibility != "timeline")
-            if (gone) {
-              val id = data.optString("id")
-              if (id.isNotBlank()) deletedIds.add(id)
-            }
-          }
-          val dataAck = data.optString("ack")
-          if (dataAck.isNotBlank()) ackIds.add(dataAck)
-        }
-
-        val eventAck = event.optString("ack")
-        if (eventAck.isNotBlank()) ackIds.add(eventAck)
-      } catch (e: Exception) {
-        Log.w(TAG, "Failed to parse sync event: ${line.take(200)}", e)
+    response.use {
+      val source = it.body?.source() ?: return SyncStreamResult(emptyList(), emptyList(), 0)
+      while (true) {
+        val line = source.readUtf8Line() ?: break
+        if (line.isNotBlank()) mutationCount += parseSyncEvent(line, deletedIds, lastAckByType)
       }
     }
+    val ackIds = lastAckByType.values.toList()
     Log.d(TAG, "consumeSyncStream: ${deletedIds.size} deletes, ${ackIds.size} acks, $mutationCount mutations")
     return SyncStreamResult(deletedIds, ackIds, mutationCount)
+  }
+
+  private fun parseSyncEvent(
+    line: String,
+    deletedIds: MutableList<String>,
+    lastAckByType: MutableMap<String, String>
+  ): Int {
+    val event = try {
+      JSONObject(line)
+    } catch (e: Exception) {
+      Log.w(TAG, "Failed to parse sync event: ${line.take(200)}", e)
+      return 0
+    }
+    val type = event.optString("type")
+    val data = event.optJSONObject("data")
+    if (data != null) {
+      if (type.contains("Delete", ignoreCase = true)) {
+        val assetId = data.optString("assetId")
+        if (assetId.isNotBlank()) deletedIds.add(assetId)
+      } else if (type.contains("Asset", ignoreCase = true)) {
+        val deletedAt = data.optString("deletedAt")
+        val visibility = data.optString("visibility")
+        // The picker drops cached rows only when onQueryDeletedMedia reports them.
+        val gone = (deletedAt.isNotBlank() && deletedAt != "null") ||
+          (visibility.isNotBlank() && visibility != "null" && visibility != "timeline")
+        if (gone) {
+          val id = data.optString("id")
+          if (id.isNotBlank()) deletedIds.add(id)
+        }
+      }
+    }
+    val ack = event.optString("ack").ifBlank { data?.optString("ack").orEmpty() }
+    if (ack.isNotBlank()) lastAckByType[ack.substringBefore('|')] = ack
+    val isMutation = type.contains("Asset", ignoreCase = true) || type.contains("Reset", ignoreCase = true)
+    return if (isMutation) 1 else 0
   }
 
   private fun ackSyncEvents(ackIds: List<String>) {
@@ -368,8 +378,7 @@ object ImmichRepository {
         put("size", size)
         put("order", "desc")
         put("withExif", true)
-        // v3's default visibility is "anything not locked", which leaks archived
-        // and hidden assets (e.g. motion-photo companions) into the main feed.
+        // Immich v3 search returns archived and hidden assets unless asked not to.
         put("visibility", "timeline")
       }
       val request = Request.Builder()
@@ -394,7 +403,7 @@ object ImmichRepository {
       }
       assets.forEach { mainSyncAssetIds.add(it.id) }
 
-      var nextToken = if (!assetsObj.isNull("nextPage")) (page + 1).toString() else null
+      val nextToken = if (!assetsObj.isNull("nextPage")) (page + 1).toString() else null
 
       // When the main sync is complete, fetch all album assets and
       // include any that weren't in the /search/metadata results
@@ -422,13 +431,12 @@ object ImmichRepository {
     pageToken: String? = null
   ): QueryResult {
     Log.d(TAG, "queryAlbumAssets: albumId=$albumId")
-    return fetchAlbumAssetsPageWithRetry(albumId, pageToken?.toIntOrNull() ?: 1, pageSize = pageSize)
+    val page = pageToken?.toIntOrNull() ?: 1
+    return retrying("album $albumId page $page") { fetchAlbumAssetsPage(albumId, page, pageSize) }
       ?: QueryResult(emptyList(), null)
   }
 
-  // Immich removed the "assets" field from GET /albums/{id} (AlbumResponseDto),
-  // so album contents are fetched via search like queryPersonAssets.
-  // Throws on failure so callers can distinguish errors from end-of-album.
+  // Immich v3 dropped the assets array from GET /albums/{id}.
   private fun fetchAlbumAssetsPage(
     albumId: String,
     page: Int,
@@ -472,22 +480,17 @@ object ImmichRepository {
     return QueryResult(assets, nextToken)
   }
 
-  private fun fetchAlbumAssetsPageWithRetry(
-    albumId: String,
-    page: Int,
-    pageSize: Int = MAX_SEARCH_PAGE_SIZE,
-    timelineOnly: Boolean = false,
-    attempts: Int = 3
-  ): QueryResult? {
+  // The picker caches an empty result for a long time, so one transient failure would stick.
+  private inline fun <T> retrying(what: String, block: () -> T): T? {
     var lastError: Exception? = null
-    repeat(attempts) {
+    repeat(3) {
       try {
-        return fetchAlbumAssetsPage(albumId, page, pageSize, timelineOnly)
+        return block()
       } catch (e: Exception) {
         lastError = e
       }
     }
-    Log.e(TAG, "fetchAlbumAssetsPage failed after $attempts attempts: album=$albumId page=$page", lastError)
+    Log.e(TAG, "$what failed after 3 attempts", lastError)
     return null
   }
 
@@ -534,21 +537,10 @@ object ImmichRepository {
     cachedPeople?.let { cached ->
       if (now - peopleCacheTime < PEOPLE_CACHE_TTL_MS) return cached
     }
-    // The picker caches an empty media-set list for a long time, so a single
-    // transient failure here blanks the faces section — retry before giving up.
-    var lastError: Exception? = null
-    repeat(3) {
-      try {
-        val people = fetchPeopleOrThrow()
-        cachedPeople = people
-        peopleCacheTime = now
-        return people
-      } catch (e: Exception) {
-        lastError = e
-      }
-    }
-    Log.e(TAG, "queryPeople failed after retries: $lastError", lastError)
-    return emptyList()
+    val people = retrying("people") { fetchPeopleOrThrow() } ?: return emptyList()
+    cachedPeople = people
+    peopleCacheTime = now
+    return people
   }
 
   private fun fetchPeopleOrThrow(): List<ImmichPerson> {
@@ -679,7 +671,7 @@ object ImmichRepository {
     val headers = mutableMapOf<String, String>()
     ApiClient.getApiKey()?.let { headers["x-api-key"] = it }
     ApiClient.getAccessToken()?.let {
-      headers["Cookie"] = "immich_access_token=$it; immich_is_authenticated=true"
+      headers["Authorization"] = "Bearer $it"
     }
     return headers
   }
@@ -757,7 +749,6 @@ object ImmichRepository {
     }
   }
 
-  // Returns null for asset types the Photo Picker can't represent (AUDIO, OTHER).
   private fun assetFromApiJson(a: JSONObject): ImmichAsset? {
     val id = a.getString("id")
     val type = a.optString("type", "IMAGE")
@@ -796,11 +787,8 @@ object ImmichRepository {
     )
   }
 
-  // Immich sends the EXIF orientation enum (1-8); Android's ORIENTATION column wants degrees.
-  // Mapping matches androidx ExifInterface.getRotationDegrees (transpose=5 -> 270, transverse=7 -> 90).
+  // Same mapping as androidx ExifInterface.getRotationDegrees.
   private fun exifOrientationToDegrees(value: Int): Int = when (value) {
-    0, 90, 180, 270 -> value
-    1, 2 -> 0
     3, 4 -> 180
     6, 7 -> 90
     5, 8 -> 270
@@ -809,32 +797,14 @@ object ImmichRepository {
 
   private fun fetchAllAlbumOnlyAssets(): List<ImmichAsset> {
     return try {
-      var albums: List<ImmichAlbum>? = null
-      var lastError: Exception? = null
-      repeat(3) {
-        if (albums == null) {
-          try {
-            albums = fetchAlbumsOrThrow()
-          } catch (e: Exception) {
-            lastError = e
-          }
-        }
-      }
-      val albumList = albums ?: run {
-        Log.e(TAG, "fetchAllAlbumOnlyAssets: album list failed after retries", lastError)
-        return emptyList()
-      }
+      val albumList = retrying("album list") { fetchAlbumsOrThrow() } ?: return emptyList()
       val albumOnlyAssets = mutableListOf<ImmichAsset>()
       for (album in albumList) {
         var page = 1
         while (true) {
-          // timelineOnly keeps the main-feed enrichment consistent with queryAllAssets'
-          // visibility filter; interactive album browsing stays unfiltered.
-          val result = fetchAlbumAssetsPageWithRetry(album.id, page, timelineOnly = true)
-          if (result == null) {
-            Log.w(TAG, "fetchAllAlbumOnlyAssets: skipping rest of album ${album.id} after page $page failed")
-            break
-          }
+          val result = retrying("album ${album.id} page $page") {
+            fetchAlbumAssetsPage(album.id, page, MAX_SEARCH_PAGE_SIZE, timelineOnly = true)
+          } ?: break
           for (asset in result.assets) {
             if (asset.id !in mainSyncAssetIds) {
               albumOnlyAssets.add(asset)
@@ -916,7 +886,6 @@ object ImmichRepository {
 
   private fun parseDuration(duration: String): Long {
     if (duration.isBlank() || duration == "null" || duration == "0:00:00.00000") return 0
-    // Immich v3 returns duration as integer milliseconds; older servers used "H:MM:SS.mmm".
     duration.toLongOrNull()?.let { return it }
     return try {
       val parts = duration.split(":")
