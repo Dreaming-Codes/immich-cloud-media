@@ -16,6 +16,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "ApiClient"
@@ -24,6 +27,8 @@ private const val KEY_SERVER_URL = "server_url"
 private const val KEY_ACCESS_TOKEN = "access_token"
 private const val KEY_API_KEY = "api_key"
 private const val KEY_ACCOUNT_NAME = "account_name"
+private const val KEY_OAUTH_STATE = "oauth_state"
+private const val KEY_OAUTH_VERIFIER = "oauth_code_verifier"
 
 object ApiClient {
   private const val CACHE_SIZE_BYTES = 100L * 1024 * 1024
@@ -164,15 +169,21 @@ object ApiClient {
   }
 
 
-  fun getSsoAuthUrl(serverUrl: String): Result<String> {
+  private const val OAUTH_REDIRECT_URI = "app.immich:///oauth-callback"
+
+  // The browser step can outlive this process, so the state and PKCE verifier live in prefs.
+  fun startOAuthLogin(serverUrl: String): Result<String> {
     return try {
       this.serverUrl = serverUrl
       val url = buildUrl("/oauth/authorize") ?: return Result.failure(Exception("Invalid server URL"))
+      val state = randomUrlSafe()
+      val codeVerifier = randomUrlSafe()
+      prefs.edit().putString(KEY_OAUTH_STATE, state).putString(KEY_OAUTH_VERIFIER, codeVerifier).apply()
 
-      val body = JSONObject().apply {
-        put("redirectUri", "app.immich:///oauth-callback")
-      }
-
+      val body = JSONObject()
+        .put("redirectUri", OAUTH_REDIRECT_URI)
+        .put("state", state)
+        .put("codeChallenge", pkceChallenge(codeVerifier))
       val request = Request.Builder()
         .url(url)
         .post(body.toString().toRequestBody("application/json".toMediaType()))
@@ -180,35 +191,30 @@ object ApiClient {
 
       client.newCall(request).execute().use { response ->
         val responseBody = response.body?.string() ?: "{}"
-        if (!response.isSuccessful) {
-          val msg = try { JSONObject(responseBody).optString("message", "Unknown error") } catch (_: Exception) { "HTTP ${response.code}" }
-          return Result.failure(Exception(msg))
-        }
-
-        val json = JSONObject(responseBody)
-        val authUrl = json.optString("url", "")
-
-        if (authUrl.isBlank()) {
-          Result.failure(Exception("No URL returned from server"))
-        } else {
-          Result.success(authUrl)
-        }
+        if (!response.isSuccessful) return Result.failure(Exception(errorMessage(responseBody, response.code)))
+        val authUrl = JSONObject(responseBody).optString("url", "")
+        if (authUrl.isBlank()) Result.failure(Exception("No URL returned from server")) else Result.success(authUrl)
       }
     } catch (e: Exception) {
-      Log.e(TAG, "getSsoAuthUrl error", e)
+      Log.e(TAG, "startOAuthLogin error", e)
       Result.failure(e)
     }
   }
 
-  fun finishSsoLogin(serverUrl: String, callbackUrl: String): Result<String> {
+  fun finishOAuthLogin(callbackUrl: String): Result<String> {
+    val state = prefs.getString(KEY_OAUTH_STATE, null)
+    val codeVerifier = prefs.getString(KEY_OAUTH_VERIFIER, null)
+    prefs.edit().remove(KEY_OAUTH_STATE).remove(KEY_OAUTH_VERIFIER).apply()
+    if (state == null || codeVerifier == null) return Result.failure(Exception("No SSO login in progress"))
+    if (queryParameter(callbackUrl, "state") != state) {
+      return Result.failure(Exception("SSO state does not match"))
+    }
     return try {
-      this.serverUrl = serverUrl
       val url = buildUrl("/oauth/callback") ?: return Result.failure(Exception("Invalid server URL"))
-
-      val body = JSONObject().apply {
-        put("url", callbackUrl.replace("app.immich:/oauth-callback", "app.immich:///oauth-callback"))
-      }
-
+      val body = JSONObject()
+        .put("url", callbackUrl.replace("app.immich:/oauth-callback", OAUTH_REDIRECT_URI))
+        .put("state", state)
+        .put("codeVerifier", codeVerifier)
       val request = Request.Builder()
         .url(url)
         .post(body.toString().toRequestBody("application/json".toMediaType()))
@@ -216,27 +222,32 @@ object ApiClient {
 
       client.newCall(request).execute().use { response ->
         val responseBody = response.body?.string() ?: "{}"
-        if (!response.isSuccessful) {
-          val msg = try { JSONObject(responseBody).optString("message", "Unknown error") } catch (_: Exception) { "HTTP ${response.code}" }
-          return Result.failure(Exception(msg))
-        }
-
-        val json = JSONObject(responseBody)
-        val token = json.optString("accessToken", "")
-
-        if (token.isBlank()) {
-          return Result.failure(Exception("No access token in response"))
-        }
-
+        if (!response.isSuccessful) return Result.failure(Exception(errorMessage(responseBody, response.code)))
+        val token = JSONObject(responseBody).optString("accessToken", "")
+        if (token.isBlank()) return Result.failure(Exception("No access token in response"))
         saveAccessToken(token)
         fetchAndSaveAccountName()
         Result.success(token)
       }
     } catch (e: Exception) {
-      Log.e(TAG, "finishSsoLogin error", e)
+      Log.e(TAG, "finishOAuthLogin error", e)
       Result.failure(e)
     }
   }
+
+  private fun queryParameter(url: String, name: String): String? =
+    url.substringAfter('?', "").split('&').map { it.split('=', limit = 2) }
+      .firstOrNull { it[0] == name }?.getOrNull(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+
+  private fun errorMessage(body: String, code: Int): String =
+    try { JSONObject(body).optString("message", "HTTP $code") } catch (_: Exception) { "HTTP $code" }
+
+  private fun randomUrlSafe(): String =
+    Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32).also { SecureRandom().nextBytes(it) })
+
+  private fun pkceChallenge(verifier: String): String =
+    Base64.getUrlEncoder().withoutPadding()
+      .encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)))
 
   private fun fetchAndSaveAccountName() {
     try {

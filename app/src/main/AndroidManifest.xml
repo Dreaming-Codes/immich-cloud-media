@@ -17,6 +17,7 @@
     <activity
       android:name=".ui.LoginActivity"
       android:exported="true"
+      android:launchMode="singleTask"
       android:theme="@style/Theme.ImmichCloudMedia">
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
