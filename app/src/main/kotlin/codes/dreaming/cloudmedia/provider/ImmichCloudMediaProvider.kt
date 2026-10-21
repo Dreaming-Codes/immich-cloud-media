@@ -8,7 +8,6 @@ import android.graphics.Point
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
-import android.provider.CloudMediaProvider
 import android.provider.CloudMediaProviderContract
 import android.util.Log
 import androidx.annotation.RequiresApi
@@ -24,7 +23,7 @@ private const val CATEGORY_TYPE_PEOPLE_AND_PETS =
 private const val SUGGESTION_TYPE_FACE =
   "com.android.providers.media.SEARCH_SUGGESTION_FACE"
 
-class ImmichCloudMediaProvider : CloudMediaProvider() {
+class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
 
   override fun onCreate(): Boolean {
     val ctx = context ?: return false
@@ -33,7 +32,7 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
     return true
   }
 
-  override fun onGetMediaCollectionInfo(extras: Bundle): Bundle {
+  override fun getMediaCollectionInfo(): Bundle {
     checkPermission()
     Log.d(TAG, "onGetMediaCollectionInfo called")
 
