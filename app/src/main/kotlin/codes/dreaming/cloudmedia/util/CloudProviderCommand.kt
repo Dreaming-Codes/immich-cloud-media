@@ -11,6 +11,9 @@ object CloudProviderCommand {
     private const val PACKAGE = BuildConfig.APPLICATION_ID
     private const val AUTHORITY = "$PACKAGE.cloudmedia"
 
+    // Android 13 reads storage_native_boot only when MediaProvider starts.
+    val needsReboot = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+
     val enable: List<String>
     val disable: List<String>
 

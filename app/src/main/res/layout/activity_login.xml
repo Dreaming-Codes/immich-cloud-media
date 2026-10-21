@@ -389,6 +389,7 @@
         </com.google.android.material.card.MaterialCardView>
 
         <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/adbSetupFooter"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/adb_setup_footer"
