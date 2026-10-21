@@ -80,8 +80,8 @@ class LoginActivity : AppCompatActivity() {
         binding.loginButton.setOnClickListener { performLogin() }
         binding.logoutButton.setOnClickListener { performLogout() }
 
-        val enableCommand = "adb shell ${CloudProviderCommand.enable}"
-        val disableCommand = "adb shell ${CloudProviderCommand.disable}"
+        val enableCommand = CloudProviderCommand.enable.joinToString("\n") { "adb shell $it" }
+        val disableCommand = CloudProviderCommand.disable.joinToString("\n") { "adb shell $it" }
         binding.enableCommandText.text = enableCommand
         binding.disableCommandText.text = disableCommand
         binding.copyEnableCommand.setOnClickListener { copyToClipboard(enableCommand) }
