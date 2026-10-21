@@ -20,7 +20,7 @@ android {
 
     defaultConfig {
         applicationId = "codes.dreaming.cloudmedia"
-        minSdk = 34
+        minSdk = 33
         targetSdk = 36
         versionCode = (findProperty("app.versionCode") as String?)?.toIntOrNull() ?: 1
         versionName = (findProperty("app.versionName") as String?) ?: "1.0.0"
