@@ -138,7 +138,7 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
     val cursor = MatrixCursor(ALBUM_PROJECTION)
     for (album in albums) {
       if (album.coverAssetId == null) continue
-      cursor.addRow(arrayOf(album.id, album.displayName, album.mediaCount, album.coverAssetId, album.dateTakenMillis))
+      cursor.addRow(arrayOf(album.id, album.dateTakenMillis, album.displayName, album.coverAssetId, album.mediaCount))
     }
 
     val cursorExtras = Bundle()
@@ -365,12 +365,14 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
       CloudMediaProviderContract.MediaColumns.MEDIA_STORE_URI
     )
 
+    // The Android 13 picker merges this cursor with its own albums and reads the columns by position,
+    // so the order must match its AlbumColumns.ALL_PROJECTION.
     private val ALBUM_PROJECTION = arrayOf(
       CloudMediaProviderContract.AlbumColumns.ID,
+      CloudMediaProviderContract.AlbumColumns.DATE_TAKEN_MILLIS,
       CloudMediaProviderContract.AlbumColumns.DISPLAY_NAME,
-      CloudMediaProviderContract.AlbumColumns.MEDIA_COUNT,
       CloudMediaProviderContract.AlbumColumns.MEDIA_COVER_ID,
-      CloudMediaProviderContract.AlbumColumns.DATE_TAKEN_MILLIS
+      CloudMediaProviderContract.AlbumColumns.MEDIA_COUNT
     )
 
     @RequiresApi(36)
