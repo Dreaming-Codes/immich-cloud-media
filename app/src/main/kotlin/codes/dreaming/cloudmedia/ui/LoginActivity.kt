@@ -190,7 +190,7 @@ class LoginActivity : AppCompatActivity() {
             binding.shizukuDisableButton.isEnabled = true
             result.fold(
                 onSuccess = {
-                    showShizukuStatus(getString(R.string.shizuku_disable_success), isError = false)
+                    showShizukuStatus(withRebootNote(getString(R.string.shizuku_disable_success)), isError = false)
                 },
                 onFailure = { e ->
                     showShizukuStatus(getString(R.string.shizuku_error, e.message), isError = true)
@@ -388,5 +388,5 @@ class LoginActivity : AppCompatActivity() {
     }
 
     private fun withRebootNote(text: String): String =
-        if (CloudProviderCommand.needsReboot) "$text ${getString(R.string.reboot_after_enable)}" else text
+        if (CloudProviderCommand.needsReboot) "$text ${getString(R.string.reboot_after_change)}" else text
 }

@@ -41,7 +41,7 @@
     <string name="adb_setup_description">Make your Immich photos available in the system photo picker used by other apps. Requires a one-time ADB setup.</string>
     <string name="adb_enable_label">Enable:</string>
     <string name="adb_disable_label">Disable:</string>
-    <string name="adb_setup_footer">Connect your device to a computer with ADB installed and run the command above. This persists across reboots and app updates.</string>
-    <string name="reboot_after_enable">Restart the phone after you enable the provider. On Android 13, the photo picker reads this setting only when the phone starts.</string>
+    <string name="adb_setup_footer">Connect your device to a computer with ADB installed and run each command above. The setting persists across reboots and app updates.</string>
+    <string name="reboot_after_change">Restart the phone after you enable or disable the provider. On Android 13, the photo picker reads this setting only when the phone starts.</string>
     <string name="copied_to_clipboard">Copied to clipboard</string>
 </resources>
