@@ -80,12 +80,15 @@ class LoginActivity : AppCompatActivity() {
         binding.loginButton.setOnClickListener { performLogin() }
         binding.logoutButton.setOnClickListener { performLogout() }
 
-        val enableCommand = "adb shell ${CloudProviderCommand.enable}"
-        val disableCommand = "adb shell ${CloudProviderCommand.disable}"
+        val enableCommand = CloudProviderCommand.enable.joinToString("\n") { "adb shell $it" }
+        val disableCommand = CloudProviderCommand.disable.joinToString("\n") { "adb shell $it" }
         binding.enableCommandText.text = enableCommand
         binding.disableCommandText.text = disableCommand
         binding.copyEnableCommand.setOnClickListener { copyToClipboard(enableCommand) }
         binding.copyDisableCommand.setOnClickListener { copyToClipboard(disableCommand) }
+        if (CloudProviderCommand.needsReboot) {
+            binding.adbSetupFooter.text = withRebootNote(getString(R.string.adb_setup_footer))
+        }
 
         // Shizuku setup
         Shizuku.addBinderReceivedListener(binderReceivedListener)
@@ -169,7 +172,7 @@ class LoginActivity : AppCompatActivity() {
             binding.shizukuDisableButton.isEnabled = true
             result.fold(
                 onSuccess = {
-                    showShizukuStatus(getString(R.string.shizuku_enable_success), isError = false)
+                    showShizukuStatus(withRebootNote(getString(R.string.shizuku_enable_success)), isError = false)
                 },
                 onFailure = { e ->
                     showShizukuStatus(getString(R.string.shizuku_error, e.message), isError = true)
@@ -187,7 +190,7 @@ class LoginActivity : AppCompatActivity() {
             binding.shizukuDisableButton.isEnabled = true
             result.fold(
                 onSuccess = {
-                    showShizukuStatus(getString(R.string.shizuku_disable_success), isError = false)
+                    showShizukuStatus(withRebootNote(getString(R.string.shizuku_disable_success)), isError = false)
                 },
                 onFailure = { e ->
                     showShizukuStatus(getString(R.string.shizuku_error, e.message), isError = true)
@@ -383,4 +386,7 @@ class LoginActivity : AppCompatActivity() {
                 .onFailure { e -> showError(getString(R.string.login_error, e.message)) }
         }
     }
+
+    private fun withRebootNote(text: String): String =
+        if (CloudProviderCommand.needsReboot) "$text ${getString(R.string.reboot_after_change)}" else text
 }

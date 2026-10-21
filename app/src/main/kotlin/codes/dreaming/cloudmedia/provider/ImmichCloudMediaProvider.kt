@@ -8,7 +8,6 @@ import android.graphics.Point
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
-import android.provider.CloudMediaProvider
 import android.provider.CloudMediaProviderContract
 import android.util.Log
 import androidx.annotation.RequiresApi
@@ -24,7 +23,7 @@ private const val CATEGORY_TYPE_PEOPLE_AND_PETS =
 private const val SUGGESTION_TYPE_FACE =
   "com.android.providers.media.SEARCH_SUGGESTION_FACE"
 
-class ImmichCloudMediaProvider : CloudMediaProvider() {
+class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
 
   override fun onCreate(): Boolean {
     val ctx = context ?: return false
@@ -33,7 +32,7 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
     return true
   }
 
-  override fun onGetMediaCollectionInfo(extras: Bundle): Bundle {
+  override fun getMediaCollectionInfo(): Bundle {
     checkPermission()
     Log.d(TAG, "onGetMediaCollectionInfo called")
 
@@ -139,7 +138,7 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
     val cursor = MatrixCursor(ALBUM_PROJECTION)
     for (album in albums) {
       if (album.coverAssetId == null) continue
-      cursor.addRow(arrayOf(album.id, album.displayName, album.mediaCount, album.coverAssetId, album.dateTakenMillis))
+      cursor.addRow(arrayOf(album.id, album.dateTakenMillis, album.displayName, album.coverAssetId, album.mediaCount))
     }
 
     val cursorExtras = Bundle()
@@ -366,12 +365,14 @@ class ImmichCloudMediaProvider : CloudMediaProvider() {
       CloudMediaProviderContract.MediaColumns.MEDIA_STORE_URI
     )
 
+    // The Android 13 picker merges this cursor with its own albums and reads the columns by position,
+    // so the order must match its AlbumColumns.ALL_PROJECTION.
     private val ALBUM_PROJECTION = arrayOf(
       CloudMediaProviderContract.AlbumColumns.ID,
+      CloudMediaProviderContract.AlbumColumns.DATE_TAKEN_MILLIS,
       CloudMediaProviderContract.AlbumColumns.DISPLAY_NAME,
-      CloudMediaProviderContract.AlbumColumns.MEDIA_COUNT,
       CloudMediaProviderContract.AlbumColumns.MEDIA_COVER_ID,
-      CloudMediaProviderContract.AlbumColumns.DATE_TAKEN_MILLIS
+      CloudMediaProviderContract.AlbumColumns.MEDIA_COUNT
     )
 
     @RequiresApi(36)

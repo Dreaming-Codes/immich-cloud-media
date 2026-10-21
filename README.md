@@ -12,7 +12,7 @@ Or download the latest APK from the [Releases](https://github.com/Dreaming-Codes
 
 ## Requirements
 
-- Android 14+ (API 34)
+- Android 13 or later (API 33)
 - An [Immich](https://immich.app/) server instance
 
 ## Setup
@@ -26,9 +26,15 @@ adb shell device_config override mediaprovider allowed_cloud_providers codes.dre
 
 # Android 14
 adb shell device_config put mediaprovider allowed_cloud_providers codes.dreaming.cloudmedia
+
+# Android 13
+adb shell device_config put storage_native_boot allowed_cloud_providers codes.dreaming.cloudmedia.cloudmedia
+adb shell device_config put mediaprovider allowed_cloud_providers codes.dreaming.cloudmedia
 ```
 
-For the debug build, use `codes.dreaming.cloudmedia.debug`. Android 14 has no `override` command. A server flag sync can reset a value set with `put`, so run it again if Immich disappears from the picker. If the picker does not show Immich right away, reboot the phone.
+For the debug build, replace `codes.dreaming.cloudmedia` with `codes.dreaming.cloudmedia.debug` in each command. Android 13 and 14 have no `override` command. A server flag sync can reset a value set with `put`, so run it again if Immich disappears from the picker. If the picker does not show Immich right away, reboot the phone.
+
+Android 13 needs two commands because the setting moved. The MediaProvider that ships with Android 13 reads the provider authority from `storage_native_boot`, and only when it starts, so reboot after you run the commands. A MediaProvider updated through Google Play system updates reads the package name from `mediaprovider`.
 
 3. Open any app's photo picker. Your Immich library appears as a cloud source.
 
@@ -51,8 +57,8 @@ A key with `all` also works. The key does not need `sync.stream`. With an API ke
 
 - Browse all photos and videos from your Immich server in the system photo picker
 - Album support with full asset browsing
-- People/face recognition categories
-- Smart search across your library
+- People/face recognition categories (Android 16 and later)
+- Smart search across your library (Android 16 and later)
 - Video playback with streaming support
 - Thumbnail previews and full-resolution downloads on demand
 

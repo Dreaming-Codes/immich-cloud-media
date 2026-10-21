@@ -34,9 +34,9 @@ object ShizukuHelper {
         Shizuku.requestPermission(requestCode)
     }
 
-    suspend fun enableProvider(): Result<String> = runShellCommand(CloudProviderCommand.enable)
+    suspend fun enableProvider(): Result<String> = runShellCommand(CloudProviderCommand.enable.joinToString(" && "))
 
-    suspend fun disableProvider(): Result<String> = runShellCommand(CloudProviderCommand.disable)
+    suspend fun disableProvider(): Result<String> = runShellCommand(CloudProviderCommand.disable.joinToString(" && "))
 
     private suspend fun runShellCommand(command: String): Result<String> = withContext(Dispatchers.IO) {
         try {
