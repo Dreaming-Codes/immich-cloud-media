@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 import android.provider.CloudMediaProviderContract
+import android.provider.MediaStore
 import android.util.Log
 import androidx.annotation.RequiresApi
 import codes.dreaming.cloudmedia.network.ImmichRepository
@@ -36,9 +37,7 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
     Log.d(TAG, "onGetMediaCollectionInfo called")
 
     val changed = ImmichRepository.detectAndApplyChanges()
-    if (changed) {
-      context?.contentResolver?.notifyChange(toNotifyUri(), null)
-    }
+    if (changed) notifyPicker()
 
     val bundle = Bundle()
     bundle.putString(
@@ -322,9 +321,16 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
     return extras
   }
 
-  private fun toNotifyUri(): android.net.Uri {
-    val authority = context!!.packageName + ".cloudmedia"
-    return android.net.Uri.parse("content://$authority")
+  // MediaProvider does not observe content URIs of the cloud authority. This call schedules a picker sync.
+  private fun notifyPicker() {
+    val ctx = context ?: return
+    try {
+      MediaStore.notifyCloudMediaChangedEvent(
+        ctx.contentResolver, ctx.packageName + ".cloudmedia", ImmichRepository.getMediaCollectionId()
+      )
+    } catch (e: SecurityException) {
+      Log.w(TAG, "Picker not notified, this app is not the current cloud media provider", e)
+    }
   }
 
   private fun checkPermission() {
