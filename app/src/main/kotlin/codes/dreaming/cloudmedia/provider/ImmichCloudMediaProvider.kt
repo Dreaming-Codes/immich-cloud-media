@@ -28,7 +28,6 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
   override fun onCreate(): Boolean {
     val ctx = context ?: return false
     ImmichRepository.initialize(ctx)
-    ImmichRepository.detectAndApplyChanges()
     return true
   }
 
