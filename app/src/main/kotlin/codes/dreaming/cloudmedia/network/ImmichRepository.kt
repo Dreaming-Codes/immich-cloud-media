@@ -197,9 +197,10 @@ object ImmichRepository {
   fun queryDeletedAssets(): List<String> {
     if (!usesSyncStream) return diffAgainstSnapshot()
     val changes = pendingChanges.getAndSet(null) ?: return emptyList()
+    val acked = ackSyncEvents(changes.ackIds)
     // Keep a failed ack pending so the next check does not announce the same events again.
-    if (!ackSyncEvents(changes.ackIds)) pendingChanges.compareAndSet(null, changes)
-    Log.d(TAG, "queryDeletedAssets: ${changes.deletedIds.size} deleted assets, acked ${changes.ackIds.size}")
+    if (!acked) pendingChanges.compareAndSet(null, changes)
+    Log.d(TAG, "queryDeletedAssets: ${changes.deletedIds.size} deleted assets, ${changes.ackIds.size} acks, acked=$acked")
     return changes.deletedIds
   }
 
