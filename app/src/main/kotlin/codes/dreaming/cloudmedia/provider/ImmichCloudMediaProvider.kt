@@ -113,8 +113,7 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
 
   override fun onQueryDeletedMedia(extras: Bundle): Cursor {
     checkPermission()
-    val syncGeneration = extras.getLong(CloudMediaProviderContract.EXTRA_SYNC_GENERATION, 0)
-    val deletedIds = ImmichRepository.queryDeletedAssets(syncGeneration)
+    val deletedIds = ImmichRepository.queryDeletedAssets()
     val cursor = MatrixCursor(arrayOf(CloudMediaProviderContract.MediaColumns.ID))
     for (id in deletedIds) cursor.addRow(arrayOf(id))
 
