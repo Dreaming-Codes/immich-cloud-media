@@ -7,6 +7,7 @@ import android.graphics.Point
 import android.media.MediaDataSource
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
@@ -15,6 +16,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import kotlin.math.roundToLong
 
 private const val TAG = "ImmichRepo"
@@ -56,6 +60,7 @@ data class QueryResult(
 object ImmichRepository {
   private lateinit var appContext: Context
   private lateinit var syncPrefs: SharedPreferences
+  @Volatile
   private var syncGeneration: Long = 0
 
   private var cachedPeople: List<ImmichPerson>? = null
@@ -66,10 +71,14 @@ object ImmichRepository {
   // (e.g. shared by other users) can be appended on the last page.
   private val mainSyncAssetIds = mutableSetOf<String>()
 
-  // Buffered sync stream results from detectAndApplyChanges()
-  // consumed by queryDeletedAssets() to avoid duplicate HTTP calls
-  private var pendingDeleteIds = mutableListOf<String>()
-  private var pendingAckIds = mutableListOf<String>()
+  // Sync stream events that detectAndApplyChanges() announced and the picker has not consumed yet.
+  // queryDeletedAssets() takes and acks them, so the server keeps an event until the picker asks for deletions.
+  private class PendingChanges(val deletedIds: List<String>, val ackIds: List<String>) {
+    // SyncCompleteV1 gets a new ack on every stream, so it does not identify the unacked events.
+    val eventAcks = ackIds.filterNot { it.startsWith("SyncCompleteV1|") }
+  }
+
+  private val pendingChanges = AtomicReference<PendingChanges?>(null)
 
   // Local MediaStore lookup for deduplication: (displayName, sizeBytes) -> MediaStore URI
   private var localMediaLookup: Map<Pair<String, Long>, Uri>? = null
@@ -118,25 +127,52 @@ object ImmichRepository {
 
   private val usesSyncStream: Boolean get() = ApiClient.getApiKey() == null
 
-  fun detectAndApplyChanges(): Boolean {
-    return try {
-      if (!usesSyncStream) return detectTimelineChange()
-      val result = consumeAssetSyncStream()
-      // Immich v3 acks a SyncCompleteV1 on every stream, so acks alone are not a change.
-      val hasChanges = result.mutationCount > 0
-      if (hasChanges) {
-        pendingDeleteIds = result.deletedIds.toMutableList()
-        pendingAckIds = result.ackIds.toMutableList()
-        incrementSyncGeneration()
-        Log.d(TAG, "detectAndApplyChanges: ${result.mutationCount} mutations, ${result.deletedIds.size} deletes, ${result.ackIds.size} acks, syncGen=$syncGeneration")
-      } else if (result.ackIds.isNotEmpty()) {
-        ackSyncEvents(result.ackIds)
+  private val changeCheckRunning = AtomicBoolean(false)
+
+  // At most one check runs at a time, so detection never races itself on the generation or the pending events.
+  fun checkForChangesInBackground(onChange: () -> Unit) {
+    if (!changeCheckRunning.compareAndSet(false, true)) return
+    thread(name = "immich-change-check") {
+      try {
+        val start = SystemClock.elapsedRealtime()
+        val changed = detectAndApplyChanges()
+        Log.d(TAG, "change check: changed=$changed in ${SystemClock.elapsedRealtime() - start} ms")
+        if (changed) onChange()
+      } finally {
+        changeCheckRunning.set(false)
       }
-      hasChanges
+    }
+  }
+
+  private fun detectAndApplyChanges(): Boolean {
+    return try {
+      if (usesSyncStream) detectSyncStreamChange() else detectTimelineChange()
     } catch (e: Exception) {
       Log.e(TAG, "detectAndApplyChanges error", e)
       false
     }
+  }
+
+  private fun detectSyncStreamChange(): Boolean {
+    val result = consumeAssetSyncStream()
+    if (result.reset) {
+      // consumeAssetSyncStream() acked the reset and set a new collection id, so the picker runs a full sync.
+      pendingChanges.set(null)
+      incrementSyncGeneration()
+      return true
+    }
+    // Immich v3 acks a SyncCompleteV1 on every stream, so acks alone are not a change.
+    if (result.mutationCount == 0) {
+      ackSyncEvents(result.ackIds)
+      return false
+    }
+    // The stream repeats unacked events until the picker consumes them, so announce each set only once.
+    val changes = PendingChanges(result.deletedIds, result.ackIds)
+    if (changes.eventAcks == pendingChanges.get()?.eventAcks) return false
+    pendingChanges.set(changes)
+    incrementSyncGeneration()
+    Log.d(TAG, "detectSyncStreamChange: ${result.mutationCount} mutations, ${result.deletedIds.size} deletes, syncGen=$syncGeneration")
+    return true
   }
 
   // Immich rejects sync endpoints for API keys, so API-key logins detect changes
@@ -158,28 +194,14 @@ object ImmichRepository {
     return true
   }
 
-  fun queryDeletedAssets(syncGeneration: Long): List<String> {
+  fun queryDeletedAssets(): List<String> {
     if (!usesSyncStream) return diffAgainstSnapshot()
-    return try {
-      val deletedIds: List<String>
-      val ackIds: List<String>
-      if (pendingDeleteIds.isNotEmpty() || pendingAckIds.isNotEmpty()) {
-        deletedIds = pendingDeleteIds.toList()
-        ackIds = pendingAckIds.toList()
-        pendingDeleteIds.clear()
-        pendingAckIds.clear()
-      } else {
-        val result = consumeAssetSyncStream()
-        deletedIds = result.deletedIds
-        ackIds = result.ackIds
-      }
-      if (ackIds.isNotEmpty()) ackSyncEvents(ackIds)
-      Log.d(TAG, "queryDeletedAssets: found ${deletedIds.size} deleted assets via sync stream")
-      deletedIds
-    } catch (e: Exception) {
-      Log.e(TAG, "queryDeletedAssets sync stream error, falling back to snapshot diff", e)
-      diffAgainstSnapshot()
-    }
+    val changes = pendingChanges.getAndSet(null) ?: return emptyList()
+    val acked = ackSyncEvents(changes.ackIds)
+    // Keep a failed ack pending so the next check does not announce the same events again.
+    if (!acked) pendingChanges.compareAndSet(null, changes)
+    Log.d(TAG, "queryDeletedAssets: ${changes.deletedIds.size} deleted assets, ${changes.ackIds.size} acks, acked=$acked")
+    return changes.deletedIds
   }
 
   private fun diffAgainstSnapshot(): List<String> {
@@ -348,10 +370,11 @@ object ImmichRepository {
     return if (isMutation) 1 else 0
   }
 
-  private fun ackSyncEvents(ackIds: List<String>) {
-    if (ackIds.isEmpty()) return
-    try {
-      val url = ApiClient.buildUrl("/sync/ack") ?: return
+  private fun ackSyncEvents(ackIds: List<String>): Boolean {
+    if (ackIds.isEmpty()) return true
+    return try {
+      val url = ApiClient.buildUrl("/sync/ack") ?: return false
+      var acked = true
       ackIds.chunked(1000).forEach { batch ->
         val body = JSONObject().apply {
           put("acks", JSONArray(batch))
@@ -363,11 +386,14 @@ object ImmichRepository {
         val response = ApiClient.getClient().newCall(request).execute()
         if (!response.isSuccessful) {
           Log.e(TAG, "ackSyncEvents failed: ${response.code}")
+          acked = false
         }
         response.close()
       }
+      acked
     } catch (e: Exception) {
       Log.e(TAG, "ackSyncEvents error", e)
+      false
     }
   }
 
