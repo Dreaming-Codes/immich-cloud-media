@@ -7,6 +7,7 @@ import android.graphics.Point
 import android.media.MediaDataSource
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
@@ -15,7 +16,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import kotlin.math.roundToLong
 
 private const val TAG = "ImmichRepo"
@@ -124,7 +127,24 @@ object ImmichRepository {
 
   private val usesSyncStream: Boolean get() = ApiClient.getApiKey() == null
 
-  fun detectAndApplyChanges(): Boolean {
+  private val changeCheckRunning = AtomicBoolean(false)
+
+  // At most one check runs at a time, so detection never races itself on the generation or the pending events.
+  fun checkForChangesInBackground(onChange: () -> Unit) {
+    if (!changeCheckRunning.compareAndSet(false, true)) return
+    thread(name = "immich-change-check") {
+      try {
+        val start = SystemClock.elapsedRealtime()
+        val changed = detectAndApplyChanges()
+        Log.d(TAG, "change check: changed=$changed in ${SystemClock.elapsedRealtime() - start} ms")
+        if (changed) onChange()
+      } finally {
+        changeCheckRunning.set(false)
+      }
+    }
+  }
+
+  private fun detectAndApplyChanges(): Boolean {
     return try {
       if (usesSyncStream) detectSyncStreamChange() else detectTimelineChange()
     } catch (e: Exception) {

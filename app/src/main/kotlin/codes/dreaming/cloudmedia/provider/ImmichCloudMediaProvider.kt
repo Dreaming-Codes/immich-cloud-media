@@ -36,9 +36,6 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
     checkPermission()
     Log.d(TAG, "onGetMediaCollectionInfo called")
 
-    val changed = ImmichRepository.detectAndApplyChanges()
-    if (changed) notifyPicker()
-
     val bundle = Bundle()
     bundle.putString(
       CloudMediaProviderContract.MediaCollectionInfo.MEDIA_COLLECTION_ID,
@@ -64,6 +61,8 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
       }
     }
 
+    // MediaProvider shows no cloud media until this returns, so the network check runs afterwards.
+    ImmichRepository.checkForChangesInBackground(::notifyPicker)
     return bundle
   }
 
