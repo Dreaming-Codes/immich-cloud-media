@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 import android.provider.CloudMediaProviderContract
+import android.provider.MediaStore
 import android.util.Log
 import androidx.annotation.RequiresApi
 import codes.dreaming.cloudmedia.network.ImmichRepository
@@ -28,18 +29,12 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
   override fun onCreate(): Boolean {
     val ctx = context ?: return false
     ImmichRepository.initialize(ctx)
-    ImmichRepository.detectAndApplyChanges()
     return true
   }
 
   override fun getMediaCollectionInfo(): Bundle {
     checkPermission()
     Log.d(TAG, "onGetMediaCollectionInfo called")
-
-    val changed = ImmichRepository.detectAndApplyChanges()
-    if (changed) {
-      context?.contentResolver?.notifyChange(toNotifyUri(), null)
-    }
 
     val bundle = Bundle()
     bundle.putString(
@@ -66,6 +61,8 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
       }
     }
 
+    // MediaProvider shows no cloud media until this returns, so the network check runs afterwards.
+    ImmichRepository.checkForChangesInBackground(::notifyPicker)
     return bundle
   }
 
@@ -114,8 +111,7 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
 
   override fun onQueryDeletedMedia(extras: Bundle): Cursor {
     checkPermission()
-    val syncGeneration = extras.getLong(CloudMediaProviderContract.EXTRA_SYNC_GENERATION, 0)
-    val deletedIds = ImmichRepository.queryDeletedAssets(syncGeneration)
+    val deletedIds = ImmichRepository.queryDeletedAssets()
     val cursor = MatrixCursor(arrayOf(CloudMediaProviderContract.MediaColumns.ID))
     for (id in deletedIds) cursor.addRow(arrayOf(id))
 
@@ -324,9 +320,19 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
     return extras
   }
 
-  private fun toNotifyUri(): android.net.Uri {
-    val authority = context!!.packageName + ".cloudmedia"
-    return android.net.Uri.parse("content://$authority")
+  // MediaProvider does not observe content URIs of the cloud authority. This call schedules a picker sync.
+  private fun notifyPicker() {
+    val ctx = context ?: return
+    try {
+      MediaStore.notifyCloudMediaChangedEvent(
+        ctx.contentResolver, ctx.packageName + ".cloudmedia", ImmichRepository.getMediaCollectionId()
+      )
+    } catch (e: SecurityException) {
+      Log.w(TAG, "Picker not notified, this app is not the current cloud media provider", e)
+    } catch (e: Exception) {
+      // This runs on the change check thread, where an uncaught exception would kill the provider process.
+      Log.e(TAG, "Picker not notified", e)
+    }
   }
 
   private fun checkPermission() {
