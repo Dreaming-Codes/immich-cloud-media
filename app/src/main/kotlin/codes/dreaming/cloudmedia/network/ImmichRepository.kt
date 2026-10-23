@@ -197,7 +197,8 @@ object ImmichRepository {
   fun queryDeletedAssets(): List<String> {
     if (!usesSyncStream) return diffAgainstSnapshot()
     val changes = pendingChanges.getAndSet(null) ?: return emptyList()
-    ackSyncEvents(changes.ackIds)
+    // Keep a failed ack pending so the next check does not announce the same events again.
+    if (!ackSyncEvents(changes.ackIds)) pendingChanges.compareAndSet(null, changes)
     Log.d(TAG, "queryDeletedAssets: ${changes.deletedIds.size} deleted assets, acked ${changes.ackIds.size}")
     return changes.deletedIds
   }
@@ -368,10 +369,11 @@ object ImmichRepository {
     return if (isMutation) 1 else 0
   }
 
-  private fun ackSyncEvents(ackIds: List<String>) {
-    if (ackIds.isEmpty()) return
-    try {
-      val url = ApiClient.buildUrl("/sync/ack") ?: return
+  private fun ackSyncEvents(ackIds: List<String>): Boolean {
+    if (ackIds.isEmpty()) return true
+    return try {
+      val url = ApiClient.buildUrl("/sync/ack") ?: return false
+      var acked = true
       ackIds.chunked(1000).forEach { batch ->
         val body = JSONObject().apply {
           put("acks", JSONArray(batch))
@@ -383,11 +385,14 @@ object ImmichRepository {
         val response = ApiClient.getClient().newCall(request).execute()
         if (!response.isSuccessful) {
           Log.e(TAG, "ackSyncEvents failed: ${response.code}")
+          acked = false
         }
         response.close()
       }
+      acked
     } catch (e: Exception) {
       Log.e(TAG, "ackSyncEvents error", e)
+      false
     }
   }
 

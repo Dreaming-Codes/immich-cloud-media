@@ -329,6 +329,9 @@ class ImmichCloudMediaProvider : CloudMediaProviderCompat() {
       )
     } catch (e: SecurityException) {
       Log.w(TAG, "Picker not notified, this app is not the current cloud media provider", e)
+    } catch (e: Exception) {
+      // This runs on the change check thread, where an uncaught exception would kill the provider process.
+      Log.e(TAG, "Picker not notified", e)
     }
   }
 
